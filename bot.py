@@ -6,8 +6,7 @@ import json
 import os
 
 # --- 設定 ---
-TOKEN = 'MTUwMDQ0MjMwNzI4NjEzODk0NQ.GzYMc3.S_Uvzecvoicldsp5qW757oZAIoletbRtcFlvAU'
-
+TOKEN = os.getenv('DISCORD_TOKEN')
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.all())
