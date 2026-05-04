@@ -4,6 +4,24 @@ from discord.ext import tasks
 from datetime import datetime
 import json
 import os
+# --- 追加 ---
+from flask import Flask
+from threading import Thread
+
+# --- Flaskサーバーの設定（UptimeRobot用） ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+# -----------
 
 # --- 設定 ---
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -150,4 +168,6 @@ async def give_xp(interaction: discord.Interaction, member: discord.Member, amou
     save_data(data)
     await interaction.response.send_message(f"✅ {member.mention} に {amount}XP 付与しました。")
 
+# --- 起動処理 ---
+keep_alive() # 先にFlaskを起動
 client.run(TOKEN)
