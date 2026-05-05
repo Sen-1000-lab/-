@@ -114,6 +114,15 @@ async def process_xp(member, amount, data, current_channel=None, skip_mult=False
         if target:
             file = await create_levelup_image(member, old_lv, u["level"])
             await target.send(content=f"🎉 {member.mention} レベルアップ！", file=file)
+# 100行目あたりに追加
+def get_omikuji_result():
+    return random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
+
+def get_rankuji_result():
+    outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
+    weights = [1, 2, 5, 10, 82]
+    return random.choices(outcomes, weights=weights, k=1)[0]
+
 
 # --- 6. クライアント ---
 class MyClient(discord.Client):
@@ -148,6 +157,17 @@ client = MyClient()
 async def on_message(message):
     if message.author.bot or not message.guild: return
     data = load_data(); gid, uid = str(message.guild.id), str(message.author.id)
+    # 136行目あたり（on_messageの序盤）に挿入
+    allowed_channels = conf.get("kuji_channels", [])
+    if message.channel.id in allowed_channels:
+                if message.content == "おみくじ":
+            res = random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
+            await message.reply(f"⛩️ おみくじの結果：**{res}** です！")
+        elif message.content == "ランくじ！":
+            res = random.choices(["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"], weights=[1, 2, 5, 10, 82], k=1)[0]
+            await message.reply(f"🎲 抽選結果：**{res}**")
+
+
     conf = data["config"].get(gid, {})
     await process_xp(message.author, conf.get("msg_rate", 5), data, message.channel)
     bw = conf.get("bonus_word")
@@ -286,6 +306,19 @@ async def reset_user_xp(interaction: discord.Interaction, member: discord.Member
 async def reset_all_xp(interaction: discord.Interaction, confirm: str):
     if confirm != "実行": return await interaction.response.send_message("❌ 『実行』と入力してください。")
     data = load_data(); data["users"] = {}; save_data(data); await interaction.response.send_message("⚠️ 全員リセット。")
+@client.tree.command(name="set-kuji-channel", description="このチャンネルでおみくじを許可します")
+async def set_kuji_channel(interaction: discord.Interaction):
+    data = load_data()
+    gid = str(interaction.guild.id)
+    conf = data["config"].setdefault(gid, {})
+    ch_list = conf.setdefault("kuji_channels", [])
+    if interaction.channel_id not in ch_list:
+        ch_list.append(interaction.channel_id)
+        save_data(data)
+        await interaction.response.send_message("✅ このチャンネルでおみくじを有効化しました！")
+    else:
+        await interaction.response.send_message("ℹ️ 既に有効です。")
+
 
 keep_alive()
 client.run(TOKEN)
