@@ -49,11 +49,9 @@ def get_font(size):
 
 # --- 4. 画像生成 (テキスト巨大化版) ---
 async def create_level_card(member, level, xp, threshold):
-    img = Image.new('RGB', (600, 240), color=(35, 39, 42)) # 少し縦を広げました
+    img = Image.new('RGB', (600, 240), color=(35, 39, 42))
     draw = ImageDraw.Draw(img)
-    # フォントサイズを大幅にアップ
     f_name = get_font(50); f_info = get_font(40); f_xp = get_font(24)
-    
     try:
         asset = member.display_avatar.with_format("png").with_size(128)
         pfp = Image.open(io.BytesIO(await asset.read())).convert("RGBA").resize((140, 140))
@@ -61,50 +59,35 @@ async def create_level_card(member, level, xp, threshold):
         ImageDraw.Draw(mask).ellipse((0, 0, 140, 140), fill=255)
         img.paste(pfp, (25, 45), mask)
     except: pass
-
     draw.text((190, 40), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
     draw.text((190, 105), f"Level: {level}", fill=(255, 215, 0), font=f_info)
-    
     bar_w, bar_h, bar_x, bar_y = 380, 30, 190, 160
     prog = min((xp / threshold) * bar_w, bar_w) if threshold > 0 else bar_w
     draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=15, fill=(60, 63, 65))
     if prog > 0:
         draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=15, fill=(114, 137, 218))
-    
     draw.text((190, 195), f"{xp} / {threshold} XP", fill=(180, 180, 180), font=f_xp)
-    
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="rank.png")
 
 async def create_levelup_image(member, old_lv, new_lv):
     img = Image.new('RGB', (600, 200), color=(44, 47, 51))
     draw = ImageDraw.Draw(img)
-    f_title = get_font(55); f_sub = get_font(45) # 巨大化
-    
+    f_title = get_font(55); f_sub = get_font(45)
     for _ in range(30):
         x, y = random.randint(0, 600), random.randint(0, 200)
         draw.ellipse((x, y, x+4, y+4), fill=(255, 215, 0))
-        
     draw.text((300, 60), "LEVEL UP !!", fill=(255, 215, 0), font=f_title, anchor="mm")
     draw.text((300, 135), f"Lv.{old_lv} ➔ Lv.{new_lv}", fill=(255, 255, 255), font=f_sub, anchor="mm")
-    
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="levelup.png")
 
 # --- 5. XPシステム ---
-def get_xp_multiplier(gid, data):
-    conf = data["config"].get(gid, {})
-    if not conf.get("hh_enabled"): return 1
-    now_h = get_now_jst().hour
-    s, e = conf.get("hh_start", 0), conf.get("hh_end", 0)
-    active = (s <= now_h < e) if s < e else (now_h >= s or now_h < e)
-    return conf.get("hh_mult", 2.0) if active else 1
-
 async def process_xp(user_id, guild, amount, data, current_channel=None):
     gid = str(guild.id)
-    u = data["users"].setdefault(user_id, {"xp":0, "level":1, "msg_count":0, "total_vc":0, "react_count":0})
+    u = data["users"].setdefault(user_id, {"xp":0, "level":1})
     old_lv = u["level"]
-    u["xp"] += int(amount * get_xp_multiplier(gid, data))
+    u["xp"] += int(amount)
     thres = data["config"].get(gid, {}).get("xp_threshold", 100)
     while u["xp"] >= thres:
         u["level"] += 1; u["xp"] -= thres
@@ -116,17 +99,12 @@ async def process_xp(user_id, guild, amount, data, current_channel=None):
             if member:
                 file = await create_levelup_image(member, old_lv, u["level"])
                 await target.send(content=f"🎉 {member.mention} レベルアップ！", file=file)
-                rid = data["config"].get(gid, {}).get("roles", {}).get(str(u["level"]))
-                if rid:
-                    role = guild.get_role(int(rid))
-                    if role: await member.add_roles(role)
 
-# --- 6. クライアント & イベント ---
+# --- 6. クライアント ---
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.all())
         self.tree = app_commands.CommandTree(self)
-        self.last_hh_state = {}
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -134,7 +112,7 @@ class MyClient(discord.Client):
 
     @tasks.loop(minutes=1)
     async def main_loop(self):
-        data = load_data(); now_h = get_now_jst().hour
+        data = load_data()
         for guild in self.guilds:
             gid = str(guild.id); conf = data["config"].setdefault(gid, {})
             rate = conf.get("vc_rate", 10)
@@ -142,18 +120,6 @@ class MyClient(discord.Client):
                 for m in vc.members:
                     if not m.bot and not m.voice.self_deaf:
                         await process_xp(str(m.id), guild, rate, data)
-                        data["users"][str(m.id)]["total_vc"] = data["users"][str(m.id)].get("total_vc", 0) + 1
-            if conf.get("hh_enabled"):
-                s, e = conf.get("hh_start", 0), conf.get("hh_end", 0)
-                is_now = (s <= now_h < e) if s < e else (now_h >= s or now_h < e)
-                if is_now != self.last_hh_state.get(gid, False):
-                    self.last_hh_state[gid] = is_now
-                    target_cid = conf.get("hh_ann_cid")
-                    if target_cid:
-                        target = guild.get_channel(int(target_cid))
-                        if target:
-                            msg = conf.get("hh_msg_start" if is_now else "hh_msg_end", "変化").replace("{multiplier}", str(conf.get("hh_mult", 2.0)))
-                            await target.send(msg)
         save_data(data)
 
 client = MyClient()
@@ -162,27 +128,19 @@ client = MyClient()
 async def on_message(message):
     if message.author.bot or not message.guild: return
     data = load_data(); uid, gid = str(message.author.id), str(message.guild.id)
-    conf = data["config"].get(gid, {})
-    await process_xp(uid, message.guild, conf.get("msg_rate", 5), data, message.channel)
-    data["users"][uid]["msg_count"] = data["users"][uid].get("msg_count", 0) + 1
-    bw = conf.get("bonus_word")
-    if bw and bw in message.content:
-        claimed = uid in conf.get("bonus_claimed", [])
-        if not conf.get("bonus_once") or not claimed:
-            await process_xp(uid, message.guild, conf.get("bonus_xp", 0), data, message.channel)
-            await message.add_reaction("🎁")
-            if conf.get("bonus_once"): conf.setdefault("bonus_claimed", []).append(uid)
+    rate = data["config"].get(gid, {}).get("msg_rate", 5)
+    await process_xp(uid, message.guild, rate, data, message.channel)
     save_data(data)
 
 @client.event
 async def on_raw_reaction_add(payload):
-    data = load_data(); gid = str(payload.guild_id); uid = str(payload.user_id)
     guild = client.get_guild(payload.guild_id)
+    if not guild: return
     member = guild.get_member(payload.user_id)
     if not member or member.bot: return
+    data = load_data(); gid = str(guild.id); uid = str(member.id)
     rate = data["config"].get(gid, {}).get("react_rate", 2)
     await process_xp(uid, guild, rate, data)
-    data["users"].setdefault(uid, {})["react_count"] = data["users"][uid].get("react_count", 0) + 1
     save_data(data)
 
 # --- 7. スラッシュコマンド ---
@@ -196,42 +154,51 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     file = await create_level_card(target, u["level"], u["xp"], thres)
     await interaction.followup.send(file=file)
 
-@client.tree.command(name="top", description="レベルランキングを表示します。")
-async def top(interaction: discord.Interaction):
-    data = load_data()
-    user_list = []
-    for uid, u in data["users"].items():
-        m = interaction.guild.get_member(int(uid))
-        if m: user_list.append((m.display_name, u))
-    
-    sorted_u = sorted(user_list, key=lambda x: (x[1]['level'], x[1]['xp']), reverse=True)[:10]
-    embed = discord.Embed(title=f"🏆 {interaction.guild.name} ランキング", color=0xffd700)
-    for i, (name, u) in enumerate(sorted_u, 1):
-        embed.add_field(name=f"{i}位: {name}", value=f"Lv.{u['level']} ({u['xp']} XP)", inline=False)
-    await interaction.response.send_message(embed=embed)
+@client.tree.command(name="set_rates", description="XP獲得レートをまとめて設定します。")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_rates(interaction: discord.Interaction, msg: int = 5, vc: int = 10, react: int = 2):
+    data = load_data(); gid = str(interaction.guild.id)
+    conf = data["config"].setdefault(gid, {})
+    conf["msg_rate"] = msg
+    conf["vc_rate"] = vc
+    conf["react_rate"] = react
+    save_data(data)
+    await interaction.response.send_message(f"✅ レートを更新しました：メッセージ={msg}, VC={vc}, リアクション={react}")
 
-@client.tree.command(name="reset_user_xp", description="【管理者用】特定のユーザーのXPデータを削除します。")
+@client.tree.command(name="set_threshold", description="レベルアップに必要なXPを設定します。")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_threshold(interaction: discord.Interaction, amount: int):
+    data = load_data(); gid = str(interaction.guild.id)
+    data["config"].setdefault(gid, {})["xp_threshold"] = amount
+    save_data(data)
+    await interaction.response.send_message(f"✅ 必要XPを **{amount}** に設定しました。")
+
+@client.tree.command(name="set_notify_channel", description="レベルアップ通知チャンネルを設定します。")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_notify_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_data(); gid = str(interaction.guild.id)
+    data["config"].setdefault(gid, {})["notify_channel"] = str(channel.id)
+    save_data(data)
+    await interaction.response.send_message(f"✅ 通知チャンネルを {channel.mention} に設定しました。")
+
+@client.tree.command(name="reset_user_xp", description="特定の人のXPをリセットします。")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_user_xp(interaction: discord.Interaction, member: discord.Member):
-    data = load_data()
-    uid = str(member.id)
+    data = load_data(); uid = str(member.id)
     if uid in data["users"]:
-        del data["users"][uid]
+        data["users"][uid] = {"xp": 0, "level": 1}
         save_data(data)
-        await interaction.response.send_message(f"✅ {member.mention} のXPデータを削除しました。")
-    else:
-        await interaction.response.send_message("❌ ユーザーデータが見つかりません。", ephemeral=True)
+        await interaction.response.send_message(f"✅ {member.mention} のデータをリセットしました。")
+    else: await interaction.response.send_message("❌ データがありません。", ephemeral=True)
 
-@client.tree.command(name="reset_all_xp", description="【管理者用】サーバー全員のXPデータを削除します。")
+@client.tree.command(name="reset_all_xp", description="全員のXPをリセットします。")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_all_xp(interaction: discord.Interaction, confirm: str):
-    if confirm != "消去実行":
-        await interaction.response.send_message("❌ 確認のため、引数に『消去実行』と入力してください。", ephemeral=True)
-        return
-    data = load_data()
-    data["users"] = {}
+    if confirm != "実行":
+        await interaction.response.send_message("❌ 『実行』と入力してください。", ephemeral=True); return
+    data = load_data(); data["users"] = {}
     save_data(data)
-    await interaction.response.send_message("⚠️ サーバー内の全XPデータをリセットしました。")
+    await interaction.response.send_message("⚠️ 全員のXPデータをリセットしました。")
 
 keep_alive()
 client.run(TOKEN)
