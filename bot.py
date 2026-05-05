@@ -159,7 +159,7 @@ async def on_message(message):
     data = load_data(); gid, uid = str(message.guild.id), str(message.author.id)
     conf = data["config"].get(gid, {})
     allowed_channels = conf.get("kuji_channels", [])
-       if message.channel.id in allowed_channels:
+    if message.channel.id in allowed_channels:
         if message.content == "おみくじ":
             res = random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
             await message.reply(f"⛩️ おみくじの結果：**{res}** です！")
