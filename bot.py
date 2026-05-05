@@ -165,7 +165,7 @@ async def on_message(message):
             await message.reply(f"⛩️ おみくじの結果：**{res}** です！")
         elif message.content == "ランくじ！":
             outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
-            res = random.choices(outcomes, weights=, k=1)
+            res = random.choices(outcomes, weights=[1, 2, 5, 10, 82], k=1)
             await message.reply(f"🎲 抽選結果：**{res}**")
 
     conf = data["config"].get(gid, {})
