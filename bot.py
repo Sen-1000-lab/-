@@ -47,38 +47,38 @@ def get_font(size):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
-# --- 4. 画像生成 ---
+# --- 4. 画像生成 (テキストサイズ大幅アップ版) ---
 async def create_level_card(member, level, xp, threshold):
-    img = Image.new('RGB', (600, 200), color=(35, 39, 42))
+    img = Image.new('RGB', (600, 220), color=(35, 39, 42))
     draw = ImageDraw.Draw(img)
-    f_name = get_font(32); f_info = get_font(24); f_xp = get_font(18)
+    f_name = get_font(48); f_info = get_font(36); f_xp = get_font(22)
     try:
         asset = member.display_avatar.with_format("png").with_size(128)
-        pfp = Image.open(io.BytesIO(await asset.read())).convert("RGBA").resize((128, 128))
-        mask = Image.new("L", (128, 128), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, 128, 128), fill=255)
-        img.paste(pfp, (30, 36), mask)
+        pfp = Image.open(io.BytesIO(await asset.read())).convert("RGBA").resize((140, 140))
+        mask = Image.new("L", (140, 140), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, 140, 140), fill=255)
+        img.paste(pfp, (25, 40), mask)
     except: pass
-    draw.text((180, 45), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
-    draw.text((180, 90), f"Level: {level}", fill=(255, 215, 0), font=f_info)
-    bar_w, bar_h, bar_x, bar_y = 380, 22, 180, 130
+    draw.text((190, 35), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
+    draw.text((190, 95), f"Level: {level}", fill=(255, 215, 0), font=f_info)
+    bar_w, bar_h, bar_x, bar_y = 380, 28, 190, 150
     prog = min((xp / threshold) * bar_w, bar_w) if threshold > 0 else bar_w
-    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=11, fill=(60, 63, 65))
+    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=14, fill=(60, 63, 65))
     if prog > 0:
-        draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=11, fill=(114, 137, 218))
-    draw.text((180, 158), f"{xp} / {threshold} XP", fill=(180, 180, 180), font=f_xp)
+        draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=14, fill=(114, 137, 218))
+    draw.text((190, 185), f"{xp} / {threshold} XP", fill=(180, 180, 180), font=f_xp)
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="rank.png")
 
 async def create_levelup_image(member, old_lv, new_lv):
-    img = Image.new('RGB', (500, 150), color=(44, 47, 51))
+    img = Image.new('RGB', (600, 200), color=(44, 47, 51))
     draw = ImageDraw.Draw(img)
-    f_title = get_font(30); f_sub = get_font(24)
+    f_title = get_font(50); f_sub = get_font(40)
     for _ in range(30):
-        x, y = random.randint(0, 500), random.randint(0, 150)
-        draw.ellipse((x, y, x+3, y+3), fill=(255, 215, 0))
-    draw.text((150, 35), "✨ LEVEL UP !! ✨", fill=(255, 215, 0), font=f_title)
-    draw.text((150, 85), f"Lv.{old_lv}  ➔  Lv.{new_lv}", fill=(255, 255, 255), font=f_sub)
+        x, y = random.randint(0, 600), random.randint(0, 200)
+        draw.ellipse((x, y, x+4, y+4), fill=(255, 215, 0))
+    draw.text((300, 60), "LEVEL UP !!", fill=(255, 215, 0), font=f_title, anchor="mm")
+    draw.text((300, 130), f"Lv.{old_lv} ➔ Lv.{new_lv}", fill=(255, 255, 255), font=f_sub, anchor="mm")
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="levelup.png")
 
@@ -165,9 +165,10 @@ async def on_message(message):
 
 @client.event
 async def on_raw_reaction_add(payload):
-    if payload.member.bot: return
     data = load_data(); gid = str(payload.guild_id); uid = str(payload.user_id)
     guild = client.get_guild(payload.guild_id)
+    member = guild.get_member(payload.user_id)
+    if not member or member.bot: return
     rate = data["config"].get(gid, {}).get("react_rate", 2)
     await process_xp(uid, guild, rate, data)
     data["users"].setdefault(uid, {})["react_count"] = data["users"][uid].get("react_count", 0) + 1
@@ -187,69 +188,49 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
 @client.tree.command(name="top", description="レベルランキングを表示します。")
 async def top(interaction: discord.Interaction):
     data = load_data()
-    sorted_u = sorted(data["users"].items(), key=lambda x: (x[1]['level'], x[1]['xp']), reverse=True)[:10]
-    res = [f"**{i+1}位**: <@{uid}> Lv.{u['level']}" for i, (uid, u) in enumerate(sorted_u)]
-    await interaction.response.send_message(embed=discord.Embed(title="🏆 ランキング", description="\n".join(res) or "データなし", color=0xffd700))
+    # サーバー内にいるメンバーのみ抽出してソート
+    valid_users = []
+    for uid, u in data["users"].items():
+        member = interaction.guild.get_member(int(uid))
+        if member:
+            valid_users.append((member.display_name, u))
+    
+    sorted_u = sorted(valid_users, key=lambda x: (x[1]['level'], x[1]['xp']), reverse=True)[:10]
+    embed = discord.Embed(title=f"🏆 {interaction.guild.name} レベルランキング", color=0xffd700)
+    
+    if not sorted_u:
+        embed.description = "データがありません。"
+    else:
+        for i, (name, u) in enumerate(sorted_u, 1):
+            embed.add_field(name=f"{i}位: {name}", value=f"Lv.{u['level']} (XP: {u['xp']})", inline=False)
+    
+    await interaction.response.send_message(embed=embed)
 
-@client.tree.command(name="give", description="【管理】XPを付与します。")
+@client.tree.command(name="reset_user_xp", description="特定のユーザーのXPとレベルをリセットします。")
 @app_commands.checks.has_permissions(administrator=True)
-async def give(interaction: discord.Interaction, member: discord.Member, amount: int):
+async def reset_user_xp(interaction: discord.Interaction, member: discord.Member):
     data = load_data()
-    await process_xp(str(member.id), interaction.guild, amount, data, interaction.channel)
+    uid = str(member.id)
+    if uid in data["users"]:
+        data["users"][uid] = {"xp": 0, "level": 1, "msg_count": 0, "total_vc": 0, "react_count": 0}
+        save_data(data)
+        await interaction.response.send_message(f"✅ {member.mention} のデータをリセットしました。")
+    else:
+        await interaction.response.send_message("❌ ユーザーデータが見つかりませんでした。", ephemeral=True)
+
+@client.tree.command(name="reset_all_xp", description="サーバー全員のXPとレベルをリセットします。")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_all_xp(interaction: discord.Interaction, confirm: str):
+    if confirm != "実行":
+        await interaction.response.send_message("❌ 実行するには『confirm』に『実行』と入力してください。", ephemeral=True)
+        return
+    data = load_data()
+    for member in interaction.guild.members:
+        mid = str(member.id)
+        if mid in data["users"]:
+            data["users"][mid] = {"xp": 0, "level": 1, "msg_count": 0, "total_vc": 0, "react_count": 0}
     save_data(data)
-    await interaction.response.send_message(f"✅ {member.mention} に {amount} XPを付与しました。")
+    await interaction.response.send_message("⚠️ サーバー全ユーザーのXPデータをリセットしました。")
 
-@client.tree.command(name="config_xp_rate", description="【管理】獲得XP量を設定します。")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_xp_rate(interaction: discord.Interaction, msg: int, vc: int, react: int):
-    data = load_data(); gid = str(interaction.guild.id)
-    data["config"].setdefault(gid, {}).update({"msg_rate":msg, "vc_rate":vc, "react_rate":react})
-    save_data(data); await interaction.response.send_message(f"✅ 設定完了: メッセ{msg} / VC{vc} / リアク{react}")
-
-# --- ここが分割されたコマンド ---
-@client.tree.command(name="set_notify_channel", description="【管理】レベルアップ通知を送るチャンネルを設定します。")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_notify_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data(); gid = str(interaction.guild.id)
-    data["config"].setdefault(gid, {})["notify_channel"] = str(channel.id)
-    save_data(data); await interaction.response.send_message(f"✅ 通知先を {channel.mention} に設定しました。")
-
-@client.tree.command(name="set_threshold", description="【管理】レベルアップに必要なXP量を設定します。")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_threshold(interaction: discord.Interaction, amount: int):
-    data = load_data(); gid = str(interaction.guild.id)
-    data["config"].setdefault(gid, {})["xp_threshold"] = amount
-    save_data(data); await interaction.response.send_message(f"✅ レベルアップに必要なXPを **{amount}** に設定しました。")
-# ------------------------------
-
-@client.tree.command(name="config_happy_hour", description="【管理】ハッピータイムを設定します。")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_happy_hour(interaction: discord.Interaction, start_h: int, end_h: int, multiplier: float, announce_channel: discord.TextChannel):
-    data = load_data(); gid = str(interaction.guild.id)
-    data["config"].setdefault(gid, {}).update({
-        "hh_enabled": True, "hh_start": start_h, "hh_end": end_h, "hh_mult": multiplier, "hh_ann_cid": str(announce_channel.id),
-        "hh_msg_start": f"🔥 ハッピータイム開始！XPが {multiplier} 倍です！", "hh_msg_end": "❄️ ハッピータイム終了。"
-    })
-    save_data(data); await interaction.response.send_message(f"✅ ハッピータイム設定完了（{multiplier}倍）")
-
-@client.tree.command(name="set_role", description="【管理】レベル報酬役職を設定します。")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_role(interaction: discord.Interaction, level: int, role: discord.Role):
-    data = load_data(); gid = str(interaction.guild.id)
-    data["config"].setdefault(gid, {}).setdefault("roles", {})[str(level)] = str(role.id)
-    save_data(data); await interaction.response.send_message(f"✅ Lv.{level} 到達時に {role.name} を付与します。")
-
-@client.tree.command(name="bonus_word", description="【管理】ボーナス単語を設定します。")
-@app_commands.checks.has_permissions(administrator=True)
-async def bonus_word(interaction: discord.Interaction, word: str, xp: int, once: bool = True):
-    data = load_data(); gid = str(interaction.guild.id)
-    data["config"].setdefault(gid, {}).update({"bonus_word": word, "bonus_xp": xp, "bonus_once": once, "bonus_claimed": []})
-    save_data(data); await interaction.response.send_message(f"✅ ボーナス単語「{word}」を設定しました。")
-
-# --- 8. 実行 ---
 keep_alive()
-try:
-    client.run(TOKEN)
-except Exception as e:
-    print(f"Error: {e}")
-    os.system("kill 1")
+client.run(TOKEN)
