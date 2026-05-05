@@ -76,36 +76,40 @@ async def create_levelup_image(member, old_lv, new_lv):
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="levelup.png")
 
-# --- 5. XPシステムロジック ---
+# --- 5. XPシステム ---
 def get_total_multiplier(member, data):
     gid = str(member.guild.id)
     conf = data["config"].get(gid, {})
     mult = 1.0
-    # ハッピーアワー判定
     if conf.get("hh_enabled"):
         now_h = get_now_jst().hour
         s, e = conf.get("hh_start", 0), conf.get("hh_end", 0)
         active = (s <= now_h < e) if s < e else (now_h >= s or now_h < e)
         if active: mult *= conf.get("hh_mult", 2.0)
-    # ロールボーナス判定
     role_bonuses = conf.get("role_bonuses", {})
     if role_bonuses:
-        best_role_mult = 1.0
+        best_m = 1.0
         for rid, m in role_bonuses.items():
-            if any(role.id == int(rid) for role in member.roles):
-                best_role_mult = max(best_role_mult, float(m))
-        mult *= best_role_mult
+            if any(r.id == int(rid) for r in member.roles): best_m = max(best_m, float(m))
+        mult *= best_m
     return mult
 
 async def process_xp(member, amount, data, current_channel=None):
     gid, uid = str(member.guild.id), str(member.id)
     u = data["users"].setdefault(uid, {"xp":0, "level":1})
     old_lv = u["level"]
-    mult = get_total_multiplier(member, data)
-    u["xp"] += int(amount * mult)
+    u["xp"] += int(amount * get_total_multiplier(member, data))
     thres = data["config"].get(gid, {}).get("xp_threshold", 100)
     while u["xp"] >= thres: u["level"] += 1; u["xp"] -= thres
+    
     if u["level"] > old_lv:
+        # ロール付与判定
+        level_roles = data["config"].get(gid, {}).get("level_roles", {})
+        for lv_str, rid in level_roles.items():
+            if u["level"] >= int(lv_str):
+                role = member.guild.get_role(int(rid))
+                if role and role not in member.roles: await member.add_roles(role)
+        # 通知
         cid = data["config"].get(gid, {}).get("notify_channel")
         target = member.guild.get_channel(int(cid)) if cid else current_channel
         if target:
@@ -117,6 +121,7 @@ class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.all())
         self.tree = app_commands.CommandTree(self)
+        self.last_hh_state = {}
 
     async def setup_hook(self):
         await self.tree.sync()
@@ -138,28 +143,28 @@ client = MyClient()
 @client.event
 async def on_message(message):
     if message.author.bot or not message.guild: return
-    data = load_data(); gid = str(message.guild.id)
+    data = load_data(); uid, gid = str(message.author.id), str(message.guild.id)
     conf = data["config"].get(gid, {})
     await process_xp(message.author, conf.get("msg_rate", 5), data, message.channel)
     bw = conf.get("bonus_word")
     if bw and bw in message.content:
         claimed = conf.setdefault("bonus_claimed", [])
-        if not conf.get("bonus_once") or str(message.author.id) not in claimed:
+        if not conf.get("bonus_once") or uid not in claimed:
             await process_xp(message.author, conf.get("bonus_xp", 0), data, message.channel)
             await message.add_reaction("🎁")
-            if conf.get("bonus_once"): claimed.append(str(message.author.id))
+            if conf.get("bonus_once"): claimed.append(uid)
     save_data(data)
 
 @client.event
 async def on_raw_reaction_add(payload):
     guild = client.get_guild(payload.guild_id)
     member = guild.get_member(payload.user_id)
-    if not member or member.bot: return
-    data = load_data(); gid = str(guild.id)
-    await process_xp(member, data["config"].get(gid, {}).get("react_rate", 2), data)
-    save_data(data)
+    if member and not member.bot:
+        data = load_data(); await process_xp(member, data["config"].get(str(guild.id), {}).get("react_rate", 2), data)
+        save_data(data)
 
 # --- 7. スラッシュコマンド ---
+
 @client.tree.command(name="rank", description="現在のレベルを表示")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
     data = load_data(); target = member or interaction.user; gid = str(interaction.guild.id)
@@ -168,48 +173,58 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     file = await create_level_card(target, u["level"], u["xp"], data["config"].get(gid, {}).get("xp_threshold", 100))
     await interaction.followup.send(file=file)
 
-@client.tree.command(name="set_role_bonus", description="特定のロールにXP倍率を付与します")
+@client.tree.command(name="top", description="ランキングを表示")
+async def top(interaction: discord.Interaction):
+    data = load_data(); users = []
+    for uid, u in data["users"].items():
+        m = interaction.guild.get_member(int(uid))
+        if m: users.append((m.display_name, u))
+    sorted_u = sorted(users, key=lambda x: (x[1]['level'], x[1]['xp']), reverse=True)[:10]
+    embed = discord.Embed(title=f"🏆 {interaction.guild.name} ランキング", color=0xffd700)
+    for i, (name, u) in enumerate(sorted_u, 1):
+        embed.add_field(name=f"{i}位: {name}", value=f"Lv.{u['level']} ({u['xp']} XP)", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@client.tree.command(name="set_level_role", description="達成レベルに応じたロール報酬を設定します")
 @app_commands.checks.has_permissions(administrator=True)
-async def set_role_bonus(interaction: discord.Interaction, role: discord.Role, multiplier: float):
+async def set_level_role(interaction: discord.Interaction, level: int, role: discord.Role):
     data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    bonuses = conf.setdefault("role_bonuses", {})
-    bonuses[str(role.id)] = multiplier
-    save_data(data); await interaction.response.send_message(f"✅ {role.mention} のXP倍率を **{multiplier}倍** に設定しました。")
+    conf.setdefault("level_roles", {})[str(level)] = str(role.id)
+    save_data(data); await interaction.response.send_message(f"✅ レベル **{level}** の報酬を {role.mention} に設定しました。")
 
-@client.tree.command(name="remove_role_bonus", description="特定のロールのXP倍率設定を削除します")
+@client.tree.command(name="remove_level_role", description="レベルロール設定を削除します")
 @app_commands.checks.has_permissions(administrator=True)
-async def remove_role_bonus(interaction: discord.Interaction, role: discord.Role):
-    data = load_data(); bonuses = data["config"].get(str(interaction.guild.id), {}).get("role_bonuses", {})
-    if str(role.id) in bonuses:
-        del bonuses[str(role.id)]
-        save_data(data); await interaction.response.send_message(f"🗑️ {role.mention} の倍率設定を削除しました。")
-    else: await interaction.response.send_message("❌ そのロールの設定はありません。", ephemeral=True)
+async def remove_level_role(interaction: discord.Interaction, level: int):
+    data = load_data(); roles = data["config"].get(str(interaction.guild.id), {}).get("level_roles", {})
+    if roles.pop(str(level), None):
+        save_data(data); await interaction.response.send_message(f"🗑️ レベル {level} の設定を削除しました。")
+    else: await interaction.response.send_message("❌ 設定が見つかりません。")
 
-@client.tree.command(name="set_rates", description="通常XPレート設定")
+@client.tree.command(name="set_rates", description="レート設定")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_rates(interaction: discord.Interaction, msg: int = 5, vc: int = 10, react: int = 2):
     data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
     conf.update({"msg_rate": msg, "vc_rate": vc, "react_rate": react})
     save_data(data); await interaction.response.send_message("✅ レートを更新しました。")
 
-@client.tree.command(name="set_bonus_word", description="ワードボーナス設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_bonus_word(interaction: discord.Interaction, word: str, xp: int, once_only: bool = True):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.update({"bonus_word": word, "bonus_xp": xp, "bonus_once": once_only, "bonus_claimed": []})
-    save_data(data); await interaction.response.send_message(f"✅ ボーナスワードを設定しました。")
-
 @client.tree.command(name="set_threshold", description="必要XP設定")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_threshold(interaction: discord.Interaction, amount: int):
     data = load_data(); data["config"].setdefault(str(interaction.guild.id), {})["xp_threshold"] = amount
-    save_data(data); await interaction.response.send_message(f"✅ 必要XPを {amount} に設定しました。")
+    save_data(data); await interaction.response.send_message(f"✅ 必要XPを {amount} にしました。")
 
-@client.tree.command(name="reset_user_xp", description="個人リセット")
+@client.tree.command(name="set_role_bonus", description="特定ロールのXP倍率設定")
 @app_commands.checks.has_permissions(administrator=True)
-async def reset_user_xp(interaction: discord.Interaction, member: discord.Member):
-    data = load_data(); data["users"][str(member.id)] = {"xp": 0, "level": 1}
-    save_data(data); await interaction.response.send_message(f"✅ {member.mention} をリセットしました。")
+async def set_role_bonus(interaction: discord.Interaction, role: discord.Role, multiplier: float):
+    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf.setdefault("role_bonuses", {})[str(role.id)] = multiplier
+    save_data(data); await interaction.response.send_message(f"✅ {role.mention} を {multiplier}倍 に設定。")
+
+@client.tree.command(name="reset_all_xp", description="全員リセット")
+@app_commands.checks.has_permissions(administrator=True)
+async def reset_all_xp(interaction: discord.Interaction, confirm: str):
+    if confirm != "実行": return await interaction.response.send_message("❌ 『実行』と入力してください。")
+    data = load_data(); data["users"] = {}; save_data(data); await interaction.response.send_message("⚠️ 全員リセット完了。")
 
 keep_alive()
 client.run(TOKEN)
