@@ -182,6 +182,16 @@ async def on_message(message):
 @client.event
 async def on_raw_reaction_add(payload):
     guild = client.get_guild(payload.guild_id)
+    if not guild: return
     member = guild.get_member(payload.user_id)
     if member and not member.bot:
-        data = load_data(); await process_xp(member, data["config"].get(str(guild.id), {}).get("react_rate", 2), data)
+        data = load_data()
+        gid = str(guild.id)
+        # XP付与処理
+        await process_xp(member, data["config"].get(gid, {}).get("react_rate", 2), data)
+        save_data(data)
+
+# --- 7. 起動処理 ---
+if __name__ == "__main__":
+    keep_alive() # Renderの「ポートなし」エラーを防ぐサーバーを起動
+    client.run(TOKEN) # Discord Botを起動
