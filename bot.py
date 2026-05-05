@@ -158,6 +158,7 @@ async def on_message(message):
     if message.author.bot or not message.guild: return
     data = load_data(); gid, uid = str(message.guild.id), str(message.author.id)
     # 136行目あたり（on_messageの序盤）に挿入
+    conf = data["config"].get(gid, {})
     allowed_channels = conf.get("kuji_channels", [])
     if message.channel.id in allowed_channels:
     if message.content == "おみくじ":
