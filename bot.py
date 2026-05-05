@@ -183,4 +183,4 @@ async def on_raw_reaction_add(payload):
     guild = client.get_guild(payload.guild_id)
     member = guild.get_member(payload.user_id)
     if member and not member.bot:
-        data = load_data(); await process_xp(member, data["config"].get(str(guild.id)
+        data = load_data(); await process_xp(member, data["config"].get(str(guild.id))
