@@ -42,7 +42,7 @@ def get_font(size):
         if os.path.exists(path): return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
-# --- 4. 画像生成 ---
+# --- 4. 画像生成 (テキスト巨大化版) ---
 async def create_level_card(member, level, xp, threshold):
     img = Image.new('RGB', (600, 240), color=(35, 39, 42))
     draw = ImageDraw.Draw(img)
@@ -102,16 +102,27 @@ async def process_xp(member, amount, data, current_channel=None, skip_mult=False
     thres = data["config"].get(gid, {}).get("xp_threshold", 100)
     while u["xp"] >= thres: u["level"] += 1; u["xp"] -= thres
     if u["level"] > old_lv:
+        # ロール報酬付与
         level_roles = data["config"].get(gid, {}).get("level_roles", {})
         for lv, rid in level_roles.items():
             if u["level"] >= int(lv):
                 role = member.guild.get_role(int(rid))
                 if role and role not in member.roles: await member.add_roles(role)
+        # 通知
         cid = data["config"].get(gid, {}).get("notify_channel")
         target = member.guild.get_channel(int(cid)) if cid else current_channel
         if target:
             file = await create_levelup_image(member, old_lv, u["level"])
             await target.send(content=f"🎉 {member.mention} レベルアップ！", file=file)
+# 100行目あたりに追加
+def get_omikuji_result():
+    return random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
+
+def get_rankuji_result():
+    outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
+    weights = [1, 2, 5, 10, 82]
+    return random.choices(outcomes, weights=weights, k=1)[0]
+
 
 # --- 6. クライアント ---
 class MyClient(discord.Client):
@@ -147,19 +158,16 @@ async def on_message(message):
     if message.author.bot or not message.guild: return
     data = load_data(); gid, uid = str(message.guild.id), str(message.author.id)
     conf = data["config"].get(gid, {})
-    
-    # --- おみくじ機能 (修正版) ---
     allowed_channels = conf.get("kuji_channels", [])
-    if message.channel.id in allowed_channels:
+       if message.channel.id in allowed_channels:
         if message.content == "おみくじ":
             res = random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
             await message.reply(f"⛩️ おみくじの結果：**{res}** です！")
         elif message.content == "ランくじ！":
             outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
-            res_list = random.choices(outcomes, weights=[1, 2, 5, 10, 82], k=1)
-            res = res_list[0]
+            res = random.choices(outcomes, weights=[1, 2, 5, 10, 82], k=1)[0]
             await message.reply(f"🎲 抽選結果：**{res}**")
-
+    conf = data["config"].get(gid, {})
     await process_xp(message.author, conf.get("msg_rate", 5), data, message.channel)
     bw = conf.get("bonus_word")
     if bw and bw in message.content:
@@ -175,29 +183,4 @@ async def on_raw_reaction_add(payload):
     guild = client.get_guild(payload.guild_id)
     member = guild.get_member(payload.user_id)
     if member and not member.bot:
-        data = load_data(); await process_xp(member, data["config"].get(str(guild.id), {}).get("react_rate", 2), data)
-        save_data(data)
-
-# --- 7. スラッシュコマンド ---
-@client.tree.command(name="rank", description="レベルを表示します")
-async def rank(interaction: discord.Interaction, member: discord.Member = None):
-    data = load_data(); target = member or interaction.user; gid = str(interaction.guild.id)
-    u = data["users"].get(str(target.id), {"level":1, "xp":0})
-    await interaction.response.defer()
-    file = await create_level_card(target, u["level"], u["xp"], data["config"].get(gid, {}).get("xp_threshold", 100))
-    await interaction.followup.send(file=file)
-
-@client.tree.command(name="set-kuji-channel", description="このチャンネルでおみくじを許可します")
-async def set_kuji_channel(interaction: discord.Interaction):
-    data = load_data(); gid = str(interaction.guild.id)
-    conf = data["config"].setdefault(gid, {})
-    ch_list = conf.setdefault("kuji_channels", [])
-    if interaction.channel_id not in ch_list:
-        ch_list.append(interaction.channel_id)
-        save_data(data)
-        await interaction.response.send_message("✅ 有効化しました！")
-    else:
-        await interaction.response.send_message("ℹ️ 既に有効です。")
-
-keep_alive()
-client.run(TOKEN)
+        data = load_data(); await process_xp(member, data["config"].get(str(guild.id)
