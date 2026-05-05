@@ -160,13 +160,14 @@ async def on_message(message):
     # 136行目あたり（on_messageの序盤）に挿入
     allowed_channels = conf.get("kuji_channels", [])
     if message.channel.id in allowed_channels:
-         if message.content == "おみくじ":
-            res = random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
-            await message.reply(f"⛩️ おみくじの結果：**{res}** です！")
-        elif message.content == "ランくじ！":
-            outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
-            res = random.choices(outcomes, weights=[1, 2, 5, 10, 82], k=1)[0]
-            await message.reply(f"🎲 抽選結果：**{res}**")
+    if message.content == "おみくじ":
+    　　　　res = random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
+    　　　　await message.reply(f"⛩️ おみくじの結果：**{res}** です！")
+    elif message.content == "ランくじ！":
+    　　　　outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
+    　　　　res = random.choices(outcomes, weights=[1, 2, 5, 10, 82], k=1)[0]
+    　　　　await message.reply(f"🎲 抽選結果：**{res}**")
+
 
     conf = data["config"].get(gid, {})
     await process_xp(message.author, conf.get("msg_rate", 5), data, message.channel)
