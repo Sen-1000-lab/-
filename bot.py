@@ -139,10 +139,12 @@ class MyClient(discord.Client):
                 is_now = (s <= now_h < e) if s < e else (now_h >= s or now_h < e)
                 if is_now != self.last_hh_state.get(gid, False):
                     self.last_hh_state[gid] = is_now
-                    target = guild.get_channel(int(conf.get("hh_ann_cid", 0)))
-                    if target:
-                        msg = conf.get("hh_msg_start" if is_now else "hh_msg_end", "変化").replace("{multiplier}", str(conf.get("hh_mult", 2.0)))
-                        await target.send(msg)
+                    ann_id = conf.get("hh_ann_cid")
+                    if ann_id:
+                        target = guild.get_channel(int(ann_id))
+                        if target:
+                            msg = conf.get("hh_msg_start" if is_now else "hh_msg_end", "変化").replace("{multiplier}", str(conf.get("hh_mult", 2.0)))
+                            await target.send(msg)
         save_data(data)
 
 client = MyClient()
@@ -151,9 +153,9 @@ client = MyClient()
 async def on_message(message):
     if message.author.bot or not message.guild: return
     data = load_data(); uid, gid = str(message.author.id), str(message.guild.id)
-    conf = data["config"].get(gid, {})
+    conf = data["config"].setdefault(gid, {})
     await process_xp(uid, message.guild, conf.get("msg_rate", 5), data, message.channel)
-    data["users"][uid]["msg_count"] = data["users"][uid].get("msg_count", 0) + 1
+    data["users"].setdefault(uid, {})["msg_count"] = data["users"][uid].get("msg_count", 0) + 1
     bw = conf.get("bonus_word")
     if bw and bw in message.content:
         claimed = uid in conf.get("bonus_claimed", [])
@@ -188,49 +190,48 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
 @client.tree.command(name="top", description="レベルランキングを表示します。")
 async def top(interaction: discord.Interaction):
     data = load_data()
-    # サーバー内にいるメンバーのみ抽出してソート
     valid_users = []
     for uid, u in data["users"].items():
-        member = interaction.guild.get_member(int(uid))
-        if member:
-            valid_users.append((member.display_name, u))
-    
+        m = interaction.guild.get_member(int(uid))
+        if m: valid_users.append((m.display_name, u))
     sorted_u = sorted(valid_users, key=lambda x: (x[1]['level'], x[1]['xp']), reverse=True)[:10]
-    embed = discord.Embed(title=f"🏆 {interaction.guild.name} レベルランキング", color=0xffd700)
-    
-    if not sorted_u:
-        embed.description = "データがありません。"
+    embed = discord.Embed(title=f"🏆 {interaction.guild.name} ランキング", color=0xffd700)
+    if not sorted_u: embed.description = "データがありません。"
     else:
         for i, (name, u) in enumerate(sorted_u, 1):
             embed.add_field(name=f"{i}位: {name}", value=f"Lv.{u['level']} (XP: {u['xp']})", inline=False)
-    
     await interaction.response.send_message(embed=embed)
 
-@client.tree.command(name="reset_user_xp", description="特定のユーザーのXPとレベルをリセットします。")
+@client.tree.command(name="reset_user_xp", description="特定のユーザーのXPをリセットします。")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_user_xp(interaction: discord.Interaction, member: discord.Member):
-    data = load_data()
-    uid = str(member.id)
+    data = load_data(); uid = str(member.id)
     if uid in data["users"]:
         data["users"][uid] = {"xp": 0, "level": 1, "msg_count": 0, "total_vc": 0, "react_count": 0}
         save_data(data)
         await interaction.response.send_message(f"✅ {member.mention} のデータをリセットしました。")
-    else:
-        await interaction.response.send_message("❌ ユーザーデータが見つかりませんでした。", ephemeral=True)
+    else: await interaction.response.send_message("❌ データが見つかりません。", ephemeral=True)
 
-@client.tree.command(name="reset_all_xp", description="サーバー全員のXPとレベルをリセットします。")
+@client.tree.command(name="reset_all_xp", description="全員のXPをリセットします。")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_all_xp(interaction: discord.Interaction, confirm: str):
     if confirm != "実行":
-        await interaction.response.send_message("❌ 実行するには『confirm』に『実行』と入力してください。", ephemeral=True)
-        return
+        await interaction.response.send_message("❌ 『実行』と入力してください。", ephemeral=True); return
     data = load_data()
-    for member in interaction.guild.members:
-        mid = str(member.id)
+    for m in interaction.guild.members:
+        mid = str(m.id)
         if mid in data["users"]:
             data["users"][mid] = {"xp": 0, "level": 1, "msg_count": 0, "total_vc": 0, "react_count": 0}
     save_data(data)
-    await interaction.response.send_message("⚠️ サーバー全ユーザーのXPデータをリセットしました。")
+    await interaction.response.send_message("⚠️ 全員のデータをリセットしました。")
+
+@client.tree.command(name="config_setup", description="サーバーの基本設定を行います。")
+@app_commands.checks.has_permissions(administrator=True)
+async def config_setup(interaction: discord.Interaction, xp_threshold: int = 100, msg_rate: int = 5, vc_rate: int = 10, react_rate: int = 2):
+    data = load_data(); gid = str(interaction.guild.id)
+    data["config"].setdefault(gid, {}).update({"xp_threshold": xp_threshold, "msg_rate": msg_rate, "vc_rate": vc_rate, "react_rate": react_rate})
+    save_data(data)
+    await interaction.response.send_message("✅ 基本設定を保存しました。")
 
 keep_alive()
 client.run(TOKEN)
