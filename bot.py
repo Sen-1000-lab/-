@@ -47,38 +47,47 @@ def get_font(size):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
-# --- 4. 画像生成 (テキストサイズ大幅アップ版) ---
+# --- 4. 画像生成 (テキスト巨大化版) ---
 async def create_level_card(member, level, xp, threshold):
-    img = Image.new('RGB', (600, 220), color=(35, 39, 42))
+    img = Image.new('RGB', (600, 240), color=(35, 39, 42)) # 少し縦を広げました
     draw = ImageDraw.Draw(img)
-    f_name = get_font(48); f_info = get_font(36); f_xp = get_font(22)
+    # フォントサイズを大幅にアップ
+    f_name = get_font(50); f_info = get_font(40); f_xp = get_font(24)
+    
     try:
         asset = member.display_avatar.with_format("png").with_size(128)
         pfp = Image.open(io.BytesIO(await asset.read())).convert("RGBA").resize((140, 140))
         mask = Image.new("L", (140, 140), 0)
         ImageDraw.Draw(mask).ellipse((0, 0, 140, 140), fill=255)
-        img.paste(pfp, (25, 40), mask)
+        img.paste(pfp, (25, 45), mask)
     except: pass
-    draw.text((190, 35), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
-    draw.text((190, 95), f"Level: {level}", fill=(255, 215, 0), font=f_info)
-    bar_w, bar_h, bar_x, bar_y = 380, 28, 190, 150
+
+    draw.text((190, 40), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
+    draw.text((190, 105), f"Level: {level}", fill=(255, 215, 0), font=f_info)
+    
+    bar_w, bar_h, bar_x, bar_y = 380, 30, 190, 160
     prog = min((xp / threshold) * bar_w, bar_w) if threshold > 0 else bar_w
-    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=14, fill=(60, 63, 65))
+    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=15, fill=(60, 63, 65))
     if prog > 0:
-        draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=14, fill=(114, 137, 218))
-    draw.text((190, 185), f"{xp} / {threshold} XP", fill=(180, 180, 180), font=f_xp)
+        draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=15, fill=(114, 137, 218))
+    
+    draw.text((190, 195), f"{xp} / {threshold} XP", fill=(180, 180, 180), font=f_xp)
+    
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="rank.png")
 
 async def create_levelup_image(member, old_lv, new_lv):
     img = Image.new('RGB', (600, 200), color=(44, 47, 51))
     draw = ImageDraw.Draw(img)
-    f_title = get_font(50); f_sub = get_font(40)
+    f_title = get_font(55); f_sub = get_font(45) # 巨大化
+    
     for _ in range(30):
         x, y = random.randint(0, 600), random.randint(0, 200)
         draw.ellipse((x, y, x+4, y+4), fill=(255, 215, 0))
+        
     draw.text((300, 60), "LEVEL UP !!", fill=(255, 215, 0), font=f_title, anchor="mm")
-    draw.text((300, 130), f"Lv.{old_lv} ➔ Lv.{new_lv}", fill=(255, 255, 255), font=f_sub, anchor="mm")
+    draw.text((300, 135), f"Lv.{old_lv} ➔ Lv.{new_lv}", fill=(255, 255, 255), font=f_sub, anchor="mm")
+    
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="levelup.png")
 
@@ -139,9 +148,9 @@ class MyClient(discord.Client):
                 is_now = (s <= now_h < e) if s < e else (now_h >= s or now_h < e)
                 if is_now != self.last_hh_state.get(gid, False):
                     self.last_hh_state[gid] = is_now
-                    ann_id = conf.get("hh_ann_cid")
-                    if ann_id:
-                        target = guild.get_channel(int(ann_id))
+                    target_cid = conf.get("hh_ann_cid")
+                    if target_cid:
+                        target = guild.get_channel(int(target_cid))
                         if target:
                             msg = conf.get("hh_msg_start" if is_now else "hh_msg_end", "変化").replace("{multiplier}", str(conf.get("hh_mult", 2.0)))
                             await target.send(msg)
@@ -153,9 +162,9 @@ client = MyClient()
 async def on_message(message):
     if message.author.bot or not message.guild: return
     data = load_data(); uid, gid = str(message.author.id), str(message.guild.id)
-    conf = data["config"].setdefault(gid, {})
+    conf = data["config"].get(gid, {})
     await process_xp(uid, message.guild, conf.get("msg_rate", 5), data, message.channel)
-    data["users"].setdefault(uid, {})["msg_count"] = data["users"][uid].get("msg_count", 0) + 1
+    data["users"][uid]["msg_count"] = data["users"][uid].get("msg_count", 0) + 1
     bw = conf.get("bonus_word")
     if bw and bw in message.content:
         claimed = uid in conf.get("bonus_claimed", [])
@@ -190,48 +199,39 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
 @client.tree.command(name="top", description="レベルランキングを表示します。")
 async def top(interaction: discord.Interaction):
     data = load_data()
-    valid_users = []
+    user_list = []
     for uid, u in data["users"].items():
         m = interaction.guild.get_member(int(uid))
-        if m: valid_users.append((m.display_name, u))
-    sorted_u = sorted(valid_users, key=lambda x: (x[1]['level'], x[1]['xp']), reverse=True)[:10]
+        if m: user_list.append((m.display_name, u))
+    
+    sorted_u = sorted(user_list, key=lambda x: (x[1]['level'], x[1]['xp']), reverse=True)[:10]
     embed = discord.Embed(title=f"🏆 {interaction.guild.name} ランキング", color=0xffd700)
-    if not sorted_u: embed.description = "データがありません。"
-    else:
-        for i, (name, u) in enumerate(sorted_u, 1):
-            embed.add_field(name=f"{i}位: {name}", value=f"Lv.{u['level']} (XP: {u['xp']})", inline=False)
+    for i, (name, u) in enumerate(sorted_u, 1):
+        embed.add_field(name=f"{i}位: {name}", value=f"Lv.{u['level']} ({u['xp']} XP)", inline=False)
     await interaction.response.send_message(embed=embed)
 
-@client.tree.command(name="reset_user_xp", description="特定のユーザーのXPをリセットします。")
+@client.tree.command(name="reset_user_xp", description="【管理者用】特定のユーザーのXPデータを削除します。")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_user_xp(interaction: discord.Interaction, member: discord.Member):
-    data = load_data(); uid = str(member.id)
+    data = load_data()
+    uid = str(member.id)
     if uid in data["users"]:
-        data["users"][uid] = {"xp": 0, "level": 1, "msg_count": 0, "total_vc": 0, "react_count": 0}
+        del data["users"][uid]
         save_data(data)
-        await interaction.response.send_message(f"✅ {member.mention} のデータをリセットしました。")
-    else: await interaction.response.send_message("❌ データが見つかりません。", ephemeral=True)
+        await interaction.response.send_message(f"✅ {member.mention} のXPデータを削除しました。")
+    else:
+        await interaction.response.send_message("❌ ユーザーデータが見つかりません。", ephemeral=True)
 
-@client.tree.command(name="reset_all_xp", description="全員のXPをリセットします。")
+@client.tree.command(name="reset_all_xp", description="【管理者用】サーバー全員のXPデータを削除します。")
 @app_commands.checks.has_permissions(administrator=True)
 async def reset_all_xp(interaction: discord.Interaction, confirm: str):
-    if confirm != "実行":
-        await interaction.response.send_message("❌ 『実行』と入力してください。", ephemeral=True); return
+    if confirm != "消去実行":
+        await interaction.response.send_message("❌ 確認のため、引数に『消去実行』と入力してください。", ephemeral=True)
+        return
     data = load_data()
-    for m in interaction.guild.members:
-        mid = str(m.id)
-        if mid in data["users"]:
-            data["users"][mid] = {"xp": 0, "level": 1, "msg_count": 0, "total_vc": 0, "react_count": 0}
+    data["users"] = {}
     save_data(data)
-    await interaction.response.send_message("⚠️ 全員のデータをリセットしました。")
-
-@client.tree.command(name="config_setup", description="サーバーの基本設定を行います。")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_setup(interaction: discord.Interaction, xp_threshold: int = 100, msg_rate: int = 5, vc_rate: int = 10, react_rate: int = 2):
-    data = load_data(); gid = str(interaction.guild.id)
-    data["config"].setdefault(gid, {}).update({"xp_threshold": xp_threshold, "msg_rate": msg_rate, "vc_rate": vc_rate, "react_rate": react_rate})
-    save_data(data)
-    await interaction.response.send_message("✅ 基本設定を保存しました。")
+    await interaction.response.send_message("⚠️ サーバー内の全XPデータをリセットしました。")
 
 keep_alive()
 client.run(TOKEN)
