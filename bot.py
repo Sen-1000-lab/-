@@ -42,7 +42,7 @@ def get_font(size):
         if os.path.exists(path): return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
-# --- 4. 画像生成 (テキスト巨大化版) ---
+# --- 4. 画像生成 ---
 async def create_level_card(member, level, xp, threshold):
     img = Image.new('RGB', (600, 240), color=(35, 39, 42))
     draw = ImageDraw.Draw(img)
@@ -102,27 +102,16 @@ async def process_xp(member, amount, data, current_channel=None, skip_mult=False
     thres = data["config"].get(gid, {}).get("xp_threshold", 100)
     while u["xp"] >= thres: u["level"] += 1; u["xp"] -= thres
     if u["level"] > old_lv:
-        # ロール報酬付与
         level_roles = data["config"].get(gid, {}).get("level_roles", {})
         for lv, rid in level_roles.items():
             if u["level"] >= int(lv):
                 role = member.guild.get_role(int(rid))
                 if role and role not in member.roles: await member.add_roles(role)
-        # 通知
         cid = data["config"].get(gid, {}).get("notify_channel")
         target = member.guild.get_channel(int(cid)) if cid else current_channel
         if target:
             file = await create_levelup_image(member, old_lv, u["level"])
             await target.send(content=f"🎉 {member.mention} レベルアップ！", file=file)
-# 100行目あたりに追加
-def get_omikuji_result():
-    return random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
-
-def get_rankuji_result():
-    outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
-    weights = [1, 2, 5, 10, 82]
-    return random.choices(outcomes, weights=weights, k=1)[0]
-
 
 # --- 6. クライアント ---
 class MyClient(discord.Client):
@@ -158,21 +147,19 @@ async def on_message(message):
     if message.author.bot or not message.guild: return
     data = load_data(); gid, uid = str(message.guild.id), str(message.author.id)
     conf = data["config"].get(gid, {})
+    
+    # --- おみくじ機能 (修正版) ---
     allowed_channels = conf.get("kuji_channels", [])
-       if message.channel.id in allowed_channels:
+    if message.channel.id in allowed_channels:
         if message.content == "おみくじ":
             res = random.choice(["大吉", "中吉", "小吉", "吉", "末吉", "凶", "大凶"])
             await message.reply(f"⛩️ おみくじの結果：**{res}** です！")
         elif message.content == "ランくじ！":
             outcomes = ["💎 ランク当たり", "✨ 大当たり", "✴️ 中当たり", "✳️ 小当たり", "💀 ハズレ"]
-            res = random.choices(outcomes, weights=[1, 2, 5, 10, 82], k=1)[0]
+            res_list = random.choices(outcomes, weights=[1, 2, 5, 10, 82], k=1)
+            res = res_list[0]
             await message.reply(f"🎲 抽選結果：**{res}**")
 
-
-
-
-
-    conf = data["config"].get(gid, {})
     await process_xp(message.author, conf.get("msg_rate", 5), data, message.channel)
     bw = conf.get("bonus_word")
     if bw and bw in message.content:
@@ -191,8 +178,7 @@ async def on_raw_reaction_add(payload):
         data = load_data(); await process_xp(member, data["config"].get(str(guild.id), {}).get("react_rate", 2), data)
         save_data(data)
 
-# --- 7. スラッシュコマンド (全19種) ---
-
+# --- 7. スラッシュコマンド ---
 @client.tree.command(name="rank", description="レベルを表示します")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
     data = load_data(); target = member or interaction.user; gid = str(interaction.guild.id)
@@ -201,128 +187,17 @@ async def rank(interaction: discord.Interaction, member: discord.Member = None):
     file = await create_level_card(target, u["level"], u["xp"], data["config"].get(gid, {}).get("xp_threshold", 100))
     await interaction.followup.send(file=file)
 
-@client.tree.command(name="top", description="ランキングを表示します")
-async def top(interaction: discord.Interaction):
-    data = load_data(); users = []
-    for uid, u in data["users"].items():
-        m = interaction.guild.get_member(int(uid))
-        if m: users.append((m.display_name, u))
-    sorted_u = sorted(users, key=lambda x: (x['level'], x['xp']), reverse=True)[:10]
-    embed = discord.Embed(title=f"🏆 {interaction.guild.name} ランキング", color=0xffd700)
-    for i, (name, u) in enumerate(sorted_u, 1):
-        embed.add_field(name=f"{i}位: {name}", value=f"Lv.{u['level']} ({u['xp']} XP)", inline=False)
-    await interaction.response.send_message(embed=embed)
-
-@client.tree.command(name="view_config", description="現在の設定を確認します")
-async def view_config(interaction: discord.Interaction):
-    data = load_data(); c = data["config"].get(str(interaction.guild.id), {})
-    embed = discord.Embed(title="⚙️ サーバー設定一覧", color=0x7289da)
-    embed.add_field(name="レート", value=f"💬:{c.get('msg_rate',5)} 🔊:{c.get('vc_rate',10)} ⭐:{c.get('react_rate',2)}", inline=True)
-    embed.add_field(name="必要XP", value=c.get('xp_threshold',100), inline=True)
-    embed.add_field(name="ボーナスワード", value=c.get('bonus_word','なし'), inline=True)
-    await interaction.response.send_message(embed=embed)
-
-@client.tree.command(name="set_rates", description="XP獲得量をまとめて設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_rates(interaction: discord.Interaction, msg: int = 5, vc: int = 10, react: int = 2):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.update({"msg_rate": msg, "vc_rate": vc, "react_rate": react})
-    save_data(data); await interaction.response.send_message("✅ レートを更新しました。")
-
-@client.tree.command(name="set_threshold", description="必要XPを設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_threshold(interaction: discord.Interaction, amount: int):
-    data = load_data(); data["config"].setdefault(str(interaction.guild.id), {})["xp_threshold"] = amount
-    save_data(data); await interaction.response.send_message(f"✅ 必要XPを {amount} にしました。")
-
-@client.tree.command(name="set_notify_channel", description="通知先を設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_notify_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data(); data["config"].setdefault(str(interaction.guild.id), {})["notify_channel"] = str(channel.id)
-    save_data(data); await interaction.response.send_message(f"✅ 通知先を {channel.mention} にしました。")
-
-@client.tree.command(name="set_level_role", description="レベル報酬を設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_level_role(interaction: discord.Interaction, level: int, role: discord.Role):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.setdefault("level_roles", {})[str(level)] = str(role.id)
-    save_data(data); await interaction.response.send_message(f"✅ Lv.{level}報酬に {role.mention} を設定。")
-
-@client.tree.command(name="remove_level_role", description="レベル報酬を削除")
-@app_commands.checks.has_permissions(administrator=True)
-async def remove_level_role(interaction: discord.Interaction, level: int):
-    data = load_data(); roles = data["config"].get(str(interaction.guild.id), {}).get("level_roles", {})
-    if roles.pop(str(level), None):
-        save_data(data); await interaction.response.send_message(f"🗑️ Lv.{level}報酬設定を削除。")
-    else: await interaction.response.send_message("❌ 設定なし。")
-
-@client.tree.command(name="set_role_bonus", description="ロール倍率を設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_role_bonus(interaction: discord.Interaction, role: discord.Role, multiplier: float):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.setdefault("role_bonuses", {})[str(role.id)] = multiplier
-    save_data(data); await interaction.response.send_message(f"✅ {role.mention} を {multiplier}倍 に設定。")
-
-@client.tree.command(name="remove_role_bonus", description="ロール倍率設定を削除")
-@app_commands.checks.has_permissions(administrator=True)
-async def remove_role_bonus(interaction: discord.Interaction, role: discord.Role):
-    data = load_data(); bonuses = data["config"].get(str(interaction.guild.id), {}).get("role_bonuses", {})
-    if bonuses.pop(str(role.id), None):
-        save_data(data); await interaction.response.send_message(f"🗑️ {role.mention} の倍率設定を削除。")
-    else: await interaction.response.send_message("❌ 設定なし。")
-
-@client.tree.command(name="set_bonus_word", description="ワードボーナスを設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_bonus_word(interaction: discord.Interaction, word: str, xp: int, once_only: bool = True):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.update({"bonus_word": word, "bonus_xp": xp, "bonus_once": once_only, "bonus_claimed": []})
-    save_data(data); await interaction.response.send_message(f"✅ 『{word}』ボーナスを設定。")
-
-@client.tree.command(name="remove_bonus_word", description="ワードボーナスを削除")
-@app_commands.checks.has_permissions(administrator=True)
-async def remove_bonus_word(interaction: discord.Interaction):
-    data = load_data(); conf = data["config"].get(str(interaction.guild.id), {})
-    for k in ["bonus_word", "bonus_xp", "bonus_once", "bonus_claimed"]: conf.pop(k, None)
-    save_data(data); await interaction.response.send_message("🗑️ ワードボーナスを削除。")
-
-@client.tree.command(name="set_happy_hour", description="ハッピーアワーを設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_happy_hour(interaction: discord.Interaction, enabled: bool, multiplier: float = 2.0, start: int = 20, end: int = 23, channel: discord.TextChannel = None):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.update({"hh_enabled": enabled, "hh_mult": multiplier, "hh_start": start, "hh_end": end})
-    if channel: conf["hh_ann_cid"] = str(channel.id)
-    save_data(data); await interaction.response.send_message("✅ ハッピーアワー設定を更新。")
-
-@client.tree.command(name="give_xp", description="指定人物にXPを付与")
-@app_commands.checks.has_permissions(administrator=True)
-async def give_xp(interaction: discord.Interaction, member: discord.Member, amount: int):
-    data = load_data(); await process_xp(member, amount, data, interaction.channel, skip_mult=True)
-    save_data(data); await interaction.response.send_message(f"🎁 {member.mention} に {amount}XP 付与。")
-
-@client.tree.command(name="reset_user_xp", description="個人リセット")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset_user_xp(interaction: discord.Interaction, member: discord.Member):
-    data = load_data(); data["users"].pop(str(member.id), None)
-    save_data(data); await interaction.response.send_message(f"✅ {member.mention} をリセット。")
-
-@client.tree.command(name="reset_all_xp", description="全員リセット")
-@app_commands.checks.has_permissions(administrator=True)
-async def reset_all_xp(interaction: discord.Interaction, confirm: str):
-    if confirm != "実行": return await interaction.response.send_message("❌ 『実行』と入力してください。")
-    data = load_data(); data["users"] = {}; save_data(data); await interaction.response.send_message("⚠️ 全員リセット。")
 @client.tree.command(name="set-kuji-channel", description="このチャンネルでおみくじを許可します")
 async def set_kuji_channel(interaction: discord.Interaction):
-    data = load_data()
-    gid = str(interaction.guild.id)
+    data = load_data(); gid = str(interaction.guild.id)
     conf = data["config"].setdefault(gid, {})
     ch_list = conf.setdefault("kuji_channels", [])
     if interaction.channel_id not in ch_list:
         ch_list.append(interaction.channel_id)
         save_data(data)
-        await interaction.response.send_message("✅ このチャンネルでおみくじを有効化しました！")
+        await interaction.response.send_message("✅ 有効化しました！")
     else:
         await interaction.response.send_message("ℹ️ 既に有効です。")
-
 
 keep_alive()
 client.run(TOKEN)
