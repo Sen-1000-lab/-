@@ -297,12 +297,32 @@ async def config_show(interaction: discord.Interaction):
         if "claimed" not in k: embed.add_field(name=k, value=f"`{v}`", inline=True)
     await interaction.response.send_message(embed=embed)
 
-@client.tree.command(name="config_base", description="【管理者】基本XP設定 (次LvへのXP, メッセージXP, VC XP)")
+@client.tree.command(name="config_threshold", description="【管理者】レベルアップに必要なXPを設定します")
 @app_commands.checks.has_permissions(administrator=True)
-async def config_base(interaction: discord.Interaction, threshold: int, msg: int, vc: int, notify_ch: discord.TextChannel):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.update({"xp_threshold": threshold, "msg_rate": msg, "vc_rate": vc, "notify_channel": str(notify_ch.id)})
-    save_data(data); await interaction.response.send_message("✅ 基本設定を更新しました。")
+async def config_threshold(interaction: discord.Interaction, threshold: int):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf["xp_threshold"] = threshold
+    save_data(data)
+    await interaction.response.send_message(f"✅ 次のレベルに必要なXPを **{threshold}** に設定しました。")
+
+@client.tree.command(name="config_rates", description="【管理者】メッセージ、VC、リアクションの獲得XPを設定します")
+@app_commands.checks.has_permissions(administrator=True)
+async def config_rates(interaction: discord.Interaction, msg: int, vc: int, react: int):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf.update({"msg_rate": msg, "vc_rate": vc, "react_rate": react})
+    save_data(data)
+    await interaction.response.send_message(f"✅ 獲得XPを更新：MSG **{msg}** / VC **{vc}** / React **{react}**")
+
+@client.tree.command(name="config_channel", description="【管理者】お祝い画像を送るチャンネルを設定します")
+@app_commands.checks.has_permissions(administrator=True)
+async def config_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf["notify_channel"] = str(channel.id)
+    save_data(data)
+    await interaction.response.send_message(f"✅ レベルアップ通知を {channel.mention} に設定しました。")
 
 @client.tree.command(name="config_hh", description="【管理者】ハッピーアワー (開始/終了時, 倍率)")
 @app_commands.checks.has_permissions(administrator=True)
@@ -394,6 +414,43 @@ async def give_xp(interaction: discord.Interaction, member: discord.Member, amou
 async def give_xp_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("❌ このコマンドを実行する権限（管理者権限）がありません。", ephemeral=True)
+
+@client.tree.command(name="top", description="レベルが高い上位10名を表示します")
+async def top(interaction: discord.Interaction):
+    data = load_data()
+    users = data.get("users", {})
+    
+    if not users:
+        await interaction.response.send_message("まだデータがありません。", ephemeral=True)
+        return
+
+    # レベル、次にXPの順でソートして上位10人を取得
+    sorted_users = sorted(
+        users.items(), 
+        key=lambda x: (x[1].get("level", 1), x[1].get("xp", 0)), 
+        reverse=True
+    )[:10]
+
+    embed = discord.Embed(
+        title=f"🏆 {interaction.guild.name} レベルランキング",
+        color=discord.Color.gold(),
+        timestamp=get_now_jst()
+    )
+
+    leaderboard_text = ""
+    for i, (uid, udata) in enumerate(sorted_users, 1):
+        member = interaction.guild.get_member(int(uid))
+        name = member.display_name if member else f"User({uid})"
+        
+        level = udata.get("level", 1)
+        xp = udata.get("xp", 0)
+        
+        # 上位3名には絵文字をつける
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"`{i}.` ")
+        leaderboard_text += f"{medal} **{name}** - Lv.{level} (XP: {xp})\n"
+
+    embed.description = leaderboard_text
+    await interaction.response.send_message(embed=embed)
 
 
 # --- 8. 起動 ---
