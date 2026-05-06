@@ -38,44 +38,73 @@ def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# --- 3. フォント取得 (巨大文字用) ---
+# --- 3. フォント取得 (標準サイズ) ---
 def get_font(size):
+    # フォントパスはそのまま、呼び出し時のサイズで調整
     font_paths = ["font.ttf", "font.otf", "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf", "C:\\Windows\\Fonts\\msgothic.ttc"]
     for path in font_paths:
         if os.path.exists(path): return ImageFont.truetype(path, size)
     return ImageFont.load_default()
 
-# --- 4. 画像生成 (デカ文字・高解像度レイアウト) ---
+# --- 4. 画像生成 (普通サイズ・モダンレイアウト) ---
 async def create_level_card(member, level, xp, threshold):
-    img = Image.new('RGB', (600, 300), color=(35, 39, 42))
+    # 高さを少し抑えてシュッとさせました
+    img = Image.new('RGB', (600, 180), color=(26, 27, 30)) 
     draw = ImageDraw.Draw(img)
-    f_name, f_info, f_xp = get_font(70), get_font(60), get_font(35)
+    
+    # フォントサイズを標準的な大きさに変更
+    f_name = get_font(32)   # 名前用
+    f_lv = get_font(28)     # Lv数値用
+    f_label = get_font(20)  # "LEVEL" や "XP" という文字用
+    f_xp = get_font(22)     # XP数値用
+
+    # アイコン描画 (少し小さくして左に配置)
     try:
-        asset = member.display_avatar.with_format("png").with_size(256)
-        pfp = Image.open(io.BytesIO(await asset.read())).convert("RGBA").resize((170, 170))
-        mask = Image.new("L", (170, 170), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, 170, 170), fill=255)
-        img.paste(pfp, (25, 45), mask)
+        asset = member.display_avatar.with_format("png").with_size(128)
+        pfp = Image.open(io.BytesIO(await asset.read())).convert("RGBA").resize((120, 120))
+        mask = Image.new("L", (120, 120), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, 120, 120), fill=255)
+        img.paste(pfp, (30, 30), mask)
     except: pass
-    draw.text((215, 35), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
-    draw.text((215, 120), f"Lv. {level}", fill=(255, 215, 0), font=f_info)
-    bar_w, bar_h, bar_x, bar_y = 360, 40, 215, 205
+
+    # 名前
+    draw.text((170, 35), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
+    
+    # レベル表示 (LEVEL 12 みたいな並び)
+    draw.text((170, 85), "LEVEL", fill=(114, 137, 218), font=f_label)
+    draw.text((245, 78), f"{level}", fill=(255, 255, 255), font=f_lv)
+
+    # XP表示 (右寄せで 100 / 1000 XP みたいな感じ)
+    xp_text = f"{xp} / {threshold} XP"
+    bbox = draw.textbbox((0, 0), xp_text, font=f_xp)
+    draw.text((570 - (bbox[2] - bbox[0]), 85), xp_text, fill=(180, 180, 180), font=f_xp)
+
+    # プログレスバー (細めにしてスッキリ)
+    bar_w, bar_h, bar_x, bar_y = 400, 16, 170, 120
     prog = min((xp / threshold) * bar_w, bar_w) if threshold > 0 else bar_w
-    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=20, fill=(60, 63, 65))
-    if prog > 0: draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=20, fill=(114, 137, 218))
-    draw.text((215, 250), f"XP: {xp} / {threshold}", fill=(180, 180, 180), font=f_xp)
+    
+    # バーの背景
+    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=8, fill=(60, 63, 65))
+    # バーの進捗 (Discordカラー)
+    if prog > 0:
+        draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=8, fill=(114, 137, 218))
+
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="rank.png")
 
+# レベルアップ画像も少しだけ落ち着いたデザインに
 async def create_levelup_image(member, old_lv, new_lv):
-    img = Image.new('RGB', (600, 250), color=(44, 47, 51))
+    img = Image.new('RGB', (500, 150), color=(35, 39, 42))
     draw = ImageDraw.Draw(img)
-    f_title, f_sub = get_font(90), get_font(70)
-    for _ in range(50):
-        x, y = random.randint(0, 600), random.randint(0, 250)
-        draw.ellipse((x, y, x+6, y+6), fill=(random.randint(200, 255), 215, 0))
-    draw.text((300, 80), "LEVEL UP!", fill=(255, 215, 0), font=f_title, anchor="mm")
-    draw.text((300, 180), f"Lv.{old_lv} > {new_lv}", fill=(255, 255, 255), font=f_sub, anchor="mm")
+    f_main = get_font(45)
+    f_sub = get_font(30)
+
+    draw.text((250, 50), "LEVEL UP!", fill=(255, 215, 0), font=f_main, anchor="mm")
+    draw.text((250, 100), f"Lv.{old_lv} → Lv.{new_lv}", fill=(255, 255, 255), font=f_sub, anchor="mm")
+    
+    # 飾り付けの線を上下に入れる
+    draw.line([(50, 130), (450, 130)], fill=(255, 215, 0), width=2)
+    
     out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
     return discord.File(out, filename="levelup.png")
 
@@ -214,24 +243,52 @@ async def on_ready():
     
 @client.event
 async def on_message(message):
-    if message.author.bot or not message.guild: return
-    data = load_data(); gid, uid = str(message.guild.id), str(message.author.id)
-    conf = data["config"].setdefault(gid, {})
+    # BotのメッセージやDMは無視
+    if message.author.bot or not message.guild:
+        return
     
-    # おみくじ/ランくじ
-    if message.channel.id in conf.get("kuji_channels", []):
-        if message.content == "おみくじ":
-            res = random.choice(["大吉","中吉","小吉","吉","末吉","凶","大凶"])
-            await message.reply(f"⛩️ おみくじ結果：**{res}**")
-        elif message.content == "ランくじ！":
-            out = ["💎ランク当","✨大当","✴️中当","✳️小当","💀ハズレ"]
-            w = conf.get("rankuji_weights", [1, 2, 5, 10, 82])
-            res = random.choices(out, weights=w, k=1)
-            await message.reply(f"🎲 抽選結果：**{res[0]}**")
+    data = load_data()
+    gid = str(message.guild.id)
+    cid = str(message.channel.id)
+    conf = data["config"].get(gid, {})
+    final_xp = 0
+    is_kuji = False
 
-    # XP処理 (メッセージ)
-    await process_xp(message.author, conf.get("msg_rate", 5), data, message.channel)
+    # --- 1. おみくじ判定 ---
+    if cid == conf.get("omikuji_channel") and message.content == "おみくじ":
+        is_kuji = True
+        res = random.choice(["大吉","中吉","小吉","吉","末吉","凶","大凶"])
+        final_xp = conf.get("omikuji_base_xp", 0)
+        if res == "大吉":
+            final_xp += conf.get("bonus_daikichi", 0)
+        await message.reply(f"⛩️ おみくじ結果：**{res}** (獲得XP: {final_xp})")
+
+    # --- 2. ランくじ！判定 ---
+    elif cid == conf.get("rankuji_channel") and message.content == "ランくじ！":
+        is_kuji = True
+        out = ["💎ランク当","✨大当","✴️中当","✳️小当","💀ハズレ"]
+        w = conf.get("rankuji_weights", [1, 2, 5, 10, 82])
+        res_list = random.choices(out, weights=w, k=1)
+        res = res_list[0]
+        final_xp = conf.get("rankuji_base_xp", 0)
+        if res == "💎ランク当":
+            final_xp += conf.get("bonus_rank_win", 0)
+        await message.reply(f"🎲 抽選結果：**{res}** (獲得XP: {final_xp})")
+
+    # --- 3. くじ引きのXP付与（くじを引いた場合） ---
+    if is_kuji:
+        if final_xp > 0:
+            await process_xp(message.author, final_xp, data, current_channel=message.channel, skip_mult=True)
+            save_data(data)
+        return # くじの時はここで終了
+
+    # --- 4. 通常の会話XP処理 (合言葉ボーナスなし) ---
+    amount = conf.get("msg_rate", 20)
+    data.setdefault("activity_log", {}).setdefault(gid, []).append(get_now_jst().timestamp())
     
+    await process_xp(message.author, amount, data, current_channel=message.channel)
+    save_data(data)
+ 
     # 合言葉ボーナス
     bw = conf.get("bonus_word")
     if bw and bw in message.content:
@@ -278,15 +335,29 @@ async def on_raw_reaction_remove(payload):
 
 # --- 7. スラッシュコマンド (全機能網羅) ---
 
-@client.tree.command(name="rank", description="デカ文字ランクカードを表示")
+@client.tree.command(name="rank", description="現在のランクカードを表示します")
 async def rank(interaction: discord.Interaction, member: discord.Member = None):
-    member = member or interaction.user
+    # 相手が指定されなければ実行した本人を対象にする
+    target = member or interaction.user
+    
     data = load_data()
-    u = data["users"].get(str(member.id), {"xp": 0, "level": 1})
-    thres = data["config"].get(str(interaction.guild.id), {}).get("xp_threshold", 100)
+    uid = str(target.id)
+    gid = str(interaction.guild.id)
+    
+    # ユーザーデータとサーバー設定（しきい値）を取得
+    u = data["users"].get(uid, {"xp": 0, "level": 1})
+    conf = data["config"].get(gid, {})
+    thres = conf.get("xp_threshold", 100)
+
+    # 1. 応答を待機状態にする（画像生成中のタイムアウト防止）
     await interaction.response.defer()
-    file = await create_level_card(member, u["level"], u["xp"], thres)
+    
+    # 2. 画像を作成
+    file = await create_level_card(target, u["level"], u["xp"], thres)
+    
+    # 3. 待機状態の応答を上書きして画像を送信
     await interaction.followup.send(file=file)
+
 
 @client.tree.command(name="config_show", description="【管理者】現在の全設定を確認")
 @app_commands.checks.has_permissions(administrator=True)
@@ -339,14 +410,54 @@ async def config_reward(interaction: discord.Interaction, level: int = None, rol
     if role and mult: conf.setdefault("role_bonuses", {})[str(role.id)] = mult
     save_data(data); await interaction.response.send_message("✅ 報酬/倍率設定を更新。")
 
-@client.tree.command(name="kuji_set", description="【管理者】おみくじch設定")
+# --- くじ引き設定コマンド群 ---
+
+@client.tree.command(name="config_omikuji", description="【管理者】おみくじを有効にするチャンネルを設定します")
 @app_commands.checks.has_permissions(administrator=True)
-async def kuji_set(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    chs = conf.setdefault("kuji_channels", [])
-    if channel.id in chs: chs.remove(channel.id); m = "解除"
-    else: chs.append(channel.id); m = "登録"
-    save_data(data); await interaction.response.send_message(f"✅ {channel.mention} をおみくじ対象に{m}しました。")
+async def config_omikuji(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf["omikuji_channel"] = str(channel.id)
+    save_data(data)
+    await interaction.response.send_message(f"⛩️ {channel.mention} で「おみくじ」を有効にしました。")
+
+@client.tree.command(name="config_rankuji", description="【管理者】ランくじ！を有効にするチャンネルを設定します")
+@app_commands.checks.has_permissions(administrator=True)
+async def config_rankuji(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf["rankuji_channel"] = str(channel.id)
+    save_data(data)
+    await interaction.response.send_message(f"🎲 {channel.mention} で「ランくじ！」を有効にしました。")
+
+@client.tree.command(name="config_kuji_xp", description="【管理者】くじ引き時に一律で付与するXPを設定します")
+@app_commands.checks.has_permissions(administrator=True)
+async def config_kuji_xp(interaction: discord.Interaction, omikuji_xp: int, rankuji_xp: int):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf["omikuji_base_xp"] = omikuji_xp
+    conf["rankuji_base_xp"] = rankuji_xp
+    save_data(data)
+    await interaction.response.send_message(f"✅ 基本XP設定：おみくじ {omikuji_xp} / ランくじ {rankuji_xp}")
+
+@client.tree.command(name="config_kuji_bonus", description="【管理者】特定の当たりが出た時のボーナスXPを設定します")
+@app_commands.checks.has_permissions(administrator=True)
+async def config_kuji_bonus(interaction: discord.Interaction, daikichi_bonus: int, rank_win_bonus: int):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf["bonus_daikichi"] = daikichi_bonus
+    conf["bonus_rank_win"] = rank_win_bonus
+    save_data(data)
+    await interaction.response.send_message(f"✅ ボーナス設定：大吉 +{daikichi_bonus} / ランク当 +{rank_win_bonus}")
+
+@client.tree.command(name="config_rankuji", description="【管理者】ランくじ！を有効にするチャンネルを設定します")
+@app_commands.checks.has_permissions(administrator=True)
+async def config_rankuji(interaction: discord.Interaction, channel: discord.TextChannel):
+    data = load_data()
+    conf = data["config"].setdefault(str(interaction.guild.id), {})
+    conf["rankuji_channel"] = str(channel.id)
+    save_data(data)
+    await interaction.response.send_message(f"🎲 {channel.mention} で「ランくじ！」が引けるようになりました。")
 
 @client.tree.command(name="admin_set", description="【管理者】特定ユーザーのXP/Lvを直接変更")
 @app_commands.checks.has_permissions(administrator=True)
