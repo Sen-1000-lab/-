@@ -450,15 +450,6 @@ async def config_kuji_bonus(interaction: discord.Interaction, daikichi_bonus: in
     save_data(data)
     await interaction.response.send_message(f"✅ ボーナス設定：大吉 +{daikichi_bonus} / ランク当 +{rank_win_bonus}")
 
-@client.tree.command(name="config_rankuji", description="【管理者】ランくじ！を有効にするチャンネルを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_rankuji(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf["rankuji_channel"] = str(channel.id)
-    save_data(data)
-    await interaction.response.send_message(f"🎲 {channel.mention} で「ランくじ！」が引けるようになりました。")
-
 @client.tree.command(name="admin_set", description="【管理者】特定ユーザーのXP/Lvを直接変更")
 @app_commands.checks.has_permissions(administrator=True)
 async def admin_set(interaction: discord.Interaction, member: discord.Member, level: int, xp: int):
