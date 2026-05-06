@@ -209,10 +209,9 @@ client = MyClient()
 
 @client.event
 async def on_ready():
-    for guild in client.guilds:
-        await client.tree.sync(guild=guild)
+    await client.tree.sync()
     print(f"✅ {client.user} 起動完了（1人VC除外設定済）")
-
+    
 @client.event
 async def on_message(message):
     if message.author.bot or not message.guild: return
