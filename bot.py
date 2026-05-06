@@ -372,6 +372,14 @@ async def config_history(interaction: discord.Interaction, channel: discord.Text
     data = load_data()
     data["config"].setdefault(str(interaction.guild.id), {})["history_channel"] = str(channel.id)
     save_data(data)
+
+# 管理者のみ実行可能な /give コマンド
+@bot.tree.command(name="give", description="【管理者】特定のユーザーにXPを付与します")
+@app_commands.describe(target="XPをあげる相手", amount="付与するXPの量")
+@app_commands.default_permissions(administrator=True) # 管理者権限を必須にする
+async def give(interaction: discord.Interaction, target: discord.Member, amount: int):
+    # XP加算の処理をここに書く
+    await interaction.response.send_message(f"✅ {target.mention} に **{amount} XP** を付与しました！")
     await interaction.response.send_message(f"✅ 管理者ログを {channel.mention} に設定しました。")
 
 # --- 8. 起動 ---
