@@ -373,14 +373,28 @@ async def config_history(interaction: discord.Interaction, channel: discord.Text
     data["config"].setdefault(str(interaction.guild.id), {})["history_channel"] = str(channel.id)
     save_data(data)
 
-# 管理者のみ実行可能な /give コマンド
-@bot.tree.command(name="give", description="【管理者】特定のユーザーにXPを付与します")
-@app_commands.describe(target="XPをあげる相手", amount="付与するXPの量")
-@app_commands.default_permissions(administrator=True) # 管理者権限を必須にする
-async def give(interaction: discord.Interaction, target: discord.Member, amount: int):
-    # XP加算の処理をここに書く
-    await interaction.response.send_message(f"✅ {target.mention} に **{amount} XP** を付与しました！")
-    await interaction.response.send_message(f"✅ 管理者ログを {channel.mention} に設定しました。")
+# --- 管理者用：XP付与コマンド ---
+@client.tree.command(name="give_xp", description="【管理者】指定したメンバーにXPを付与します")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(member="XPを付与するメンバー", amount="付与するXPの量")
+async def give_xp(interaction: discord.Interaction, member: discord.Member, amount: int):
+    if amount <= 0:
+        await interaction.response.send_message("1以上の数値を入力してください。", ephemeral=True)
+        return
+
+    data = load_data()
+    # process_xpを呼び出してXPを付与（倍率無視、通知あり）
+    await process_xp(member, amount, data, current_channel=interaction.channel, skip_mult=True)
+    save_data(data)
+
+    await interaction.response.send_message(f"✅ {member.display_name} に **{amount} XP** を付与しました！")
+
+# エラーハンドリング（権限がない場合）
+@give_xp.error
+async def give_xp_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("❌ このコマンドを実行する権限（管理者権限）がありません。", ephemeral=True)
+
 
 # --- 8. 起動 ---
 if __name__ == "__main__":
