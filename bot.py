@@ -1,561 +1,2231 @@
 import discord
 from discord import app_commands
 from discord.ext import tasks
+
 import datetime
 import json
 import os
 import io
 import random
+import aiohttp
+
 from flask import Flask
 from threading import Thread
-from PIL import Image, ImageDraw, ImageFont
 
-# --- 1. 常時起動設定 (Render/Replit等用) ---
-app = Flask('')
-@app.route('/')
-def home(): return "Bot is alive!"
-def run(): app.run(host='0.0.0.0', port=8080)
-def keep_alive(): Thread(target=run).start()
+from PIL import Image
+from PIL import ImageDraw
+from PIL import ImageFont
 
-# --- 2. データ管理 (バックアップ機能付き) ---
-TOKEN = os.getenv('DISCORD_TOKEN')
-DATA_FILE = 'server_data.json'
-BACKUP_FILE = 'server_data_bak.json'
+
+# ==================================================
+# Keep Alive
+# ==================================================
+
+app = Flask("")
+
+
+@app.route("/")
+def home():
+    return "Bot is Alive"
+
+
+def run_web():
+    app.run(
+        host="0.0.0.0",
+        port=8080
+    )
+
+
+def keep_alive():
+    Thread(
+        target=run_web,
+        daemon=True
+    ).start()
+
+
+# ==================================================
+# Environment
+# ==================================================
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+DATA_FILE = "server_data.json"
+BACKUP_FILE = "server_data_backup.json"
+
+
+# ==================================================
+# Utility
+# ==================================================
 
 def get_now_jst():
-    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+    return datetime.datetime.now(
+        datetime.timezone(
+            datetime.timedelta(hours=9)
+        )
+    )
+
 
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            try: return json.load(f)
-            except: pass
-    return {"users": {}, "config": {}}
+
+    default_data = {
+        "users": {},
+        "config": {},
+        "activity_log": {}
+    }
+
+    if not os.path.exists(DATA_FILE):
+        return default_data
+
+    try:
+
+        with open(
+            DATA_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            data = json.load(f)
+
+        data.setdefault("users", {})
+        data.setdefault("config", {})
+        data.setdefault("activity_log", {})
+
+        return data
+
+    except Exception:
+
+        if os.path.exists(BACKUP_FILE):
+
+            try:
+
+                with open(
+                    BACKUP_FILE,
+                    "r",
+                    encoding="utf-8"
+                ) as f:
+
+                    return json.load(f)
+
+            except Exception:
+                pass
+
+        return default_data
+
 
 def save_data(data):
-    if os.path.exists(DATA_FILE):
-        os.replace(DATA_FILE, BACKUP_FILE)
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
 
-# --- 3. フォント取得 (標準サイズ) ---
+    try:
+
+        if os.path.exists(DATA_FILE):
+
+            try:
+                os.replace(
+                    DATA_FILE,
+                    BACKUP_FILE
+                )
+            except Exception:
+                pass
+
+        with open(
+            DATA_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                data,
+                f,
+                ensure_ascii=False,
+                indent=4
+            )
+
+    except Exception as e:
+        print("保存失敗:", e)
+
+
+# ==================================================
+# Font
+# ==================================================
+
 def get_font(size):
-    # フォントパスはそのまま、呼び出し時のサイズで調整
-    font_paths = ["font.ttf", "font.otf", "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf", "C:\\Windows\\Fonts\\msgothic.ttc"]
-    for path in font_paths:
-        if os.path.exists(path): return ImageFont.truetype(path, size)
+
+    paths = [
+        "font.ttf",
+        "font.otf",
+        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+        "C:\\Windows\\Fonts\\msgothic.ttc"
+    ]
+
+    for path in paths:
+
+        try:
+
+            if os.path.exists(path):
+
+                return ImageFont.truetype(
+                    path,
+                    size
+                )
+
+        except Exception:
+            pass
+
     return ImageFont.load_default()
 
-# --- 4. 画像生成 (普通サイズ・モダンレイアウト) ---
-async def create_level_card(member, level, xp, threshold):
-    # 高さを少し抑えてシュッとさせました
-    img = Image.new('RGB', (600, 180), color=(26, 27, 30)) 
-    draw = ImageDraw.Draw(img)
-    
-    # フォントサイズを標準的な大きさに変更
-    f_name = get_font(32)   # 名前用
-    f_lv = get_font(28)     # Lv数値用
-    f_label = get_font(20)  # "LEVEL" や "XP" という文字用
-    f_xp = get_font(22)     # XP数値用
 
-    # アイコン描画 (少し小さくして左に配置)
+# ==================================================
+# User Data
+# ==================================================
+
+def get_user_data(data, uid):
+
+    uid = str(uid)
+
+    user = data["users"].setdefault(
+        uid,
+        {
+            "xp": 0,
+            "level": 1,
+            "total_msg": 0,
+            "total_vc": 0,
+            "total_react": 0,
+            "last_daily": 0
+        }
+    )
+
+    user.setdefault("xp", 0)
+    user.setdefault("level", 1)
+    user.setdefault("total_msg", 0)
+    user.setdefault("total_vc", 0)
+    user.setdefault("total_react", 0)
+    user.setdefault("last_daily", 0)
+
+    return user
+
+
+# ==================================================
+# Image Generator
+# ==================================================
+
+async def create_level_card(
+    member,
+    level,
+    xp,
+    threshold
+):
+
+    img = Image.new(
+        "RGB",
+        (700, 220),
+        (32, 34, 37)
+    )
+
+    draw = ImageDraw.Draw(img)
+
+    name_font = get_font(34)
+    level_font = get_font(28)
+    xp_font = get_font(22)
+
     try:
-        asset = member.display_avatar.with_format("png").with_size(128)
-        pfp = Image.open(io.BytesIO(await asset.read())).convert("RGBA").resize((120, 120))
-        mask = Image.new("L", (120, 120), 0)
-        ImageDraw.Draw(mask).ellipse((0, 0, 120, 120), fill=255)
-        img.paste(pfp, (30, 30), mask)
-    except: pass
 
-    # 名前
-    draw.text((170, 35), f"{member.display_name}", fill=(255, 255, 255), font=f_name)
-    
-    # レベル表示 (LEVEL 12 みたいな並び)
-    draw.text((170, 85), "LEVEL", fill=(114, 137, 218), font=f_label)
-    draw.text((245, 78), f"{level}", fill=(255, 255, 255), font=f_lv)
+        avatar = (
+            member.display_avatar
+            .with_format("png")
+            .with_size(256)
+        )
 
-    # XP表示 (右寄せで 100 / 1000 XP みたいな感じ)
-    xp_text = f"{xp} / {threshold} XP"
-    bbox = draw.textbbox((0, 0), xp_text, font=f_xp)
-    draw.text((570 - (bbox[2] - bbox[0]), 85), xp_text, fill=(180, 180, 180), font=f_xp)
+        avatar_bytes = await avatar.read()
 
-    # プログレスバー (細めにしてスッキリ)
-    bar_w, bar_h, bar_x, bar_y = 400, 16, 170, 120
-    prog = min((xp / threshold) * bar_w, bar_w) if threshold > 0 else bar_w
-    
-    # バーの背景
-    draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h], radius=8, fill=(60, 63, 65))
-    # バーの進捗 (Discordカラー)
-    if prog > 0:
-        draw.rounded_rectangle([bar_x, bar_y, bar_x + prog, bar_y + bar_h], radius=8, fill=(114, 137, 218))
+        pfp = Image.open(
+            io.BytesIO(avatar_bytes)
+        ).convert("RGBA")
 
-    out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
-    return discord.File(out, filename="rank.png")
+        pfp = pfp.resize(
+            (140, 140)
+        )
 
-# レベルアップ画像も少しだけ落ち着いたデザインに
-async def create_levelup_image(member, old_lv, new_lv):
-    img = Image.new('RGB', (500, 150), color=(35, 39, 42))
+        mask = Image.new(
+            "L",
+            (140, 140),
+            0
+        )
+
+        ImageDraw.Draw(mask).ellipse(
+            (0, 0, 140, 140),
+            fill=255
+        )
+
+        img.paste(
+            pfp,
+            (30, 40),
+            mask
+        )
+
+    except Exception:
+        pass
+
+    draw.text(
+        (200, 35),
+        member.display_name,
+        fill=(255, 255, 255),
+        font=name_font
+    )
+
+    draw.text(
+        (200, 95),
+        f"LEVEL {level}",
+        fill=(114, 137, 218),
+        font=level_font
+    )
+
+    draw.text(
+        (200, 140),
+        f"{xp} / {threshold} XP",
+        fill=(200, 200, 200),
+        font=xp_font
+    )
+
+    bar_x = 200
+    bar_y = 180
+    bar_w = 450
+    bar_h = 18
+
+    draw.rounded_rectangle(
+        (
+            bar_x,
+            bar_y,
+            bar_x + bar_w,
+            bar_y + bar_h
+        ),
+        radius=10,
+        fill=(70, 70, 70)
+    )
+
+    progress = 0
+
+    if threshold > 0:
+        progress = min(
+            bar_w,
+            int(
+                (xp / threshold)
+                * bar_w
+            )
+        )
+
+    if progress > 0:
+
+        draw.rounded_rectangle(
+            (
+                bar_x,
+                bar_y,
+                bar_x + progress,
+                bar_y + bar_h
+            ),
+            radius=10,
+            fill=(114, 137, 218)
+        )
+
+    buffer = io.BytesIO()
+
+    img.save(
+        buffer,
+        format="PNG"
+    )
+
+    buffer.seek(0)
+
+    return discord.File(
+        buffer,
+        filename="rank.png"
+    )
+
+
+async def create_levelup_image(
+    member,
+    old_level,
+    new_level
+):
+
+    img = Image.new(
+        "RGB",
+        (650, 220),
+        (35, 39, 42)
+    )
+
     draw = ImageDraw.Draw(img)
-    f_main = get_font(45)
-    f_sub = get_font(30)
 
-    draw.text((250, 50), "LEVEL UP!", fill=(255, 215, 0), font=f_main, anchor="mm")
-    draw.text((250, 100), f"Lv.{old_lv} → Lv.{new_lv}", fill=(255, 255, 255), font=f_sub, anchor="mm")
-    
-    # 飾り付けの線を上下に入れる
-    draw.line([(50, 130), (450, 130)], fill=(255, 215, 0), width=2)
-    
-    out = io.BytesIO(); img.save(out, format="PNG"); out.seek(0)
-    return discord.File(out, filename="levelup.png")
+    title_font = get_font(50)
+    sub_font = get_font(32)
 
-# --- 5. XPシステム ---
+    draw.text(
+        (325, 80),
+        "LEVEL UP!",
+        fill=(255, 215, 0),
+        font=title_font,
+        anchor="mm"
+    )
+
+    draw.text(
+        (325, 145),
+        f"Lv.{old_level} → Lv.{new_level}",
+        fill=(255, 255, 255),
+        font=sub_font,
+        anchor="mm"
+    )
+
+    buffer = io.BytesIO()
+
+    img.save(
+        buffer,
+        format="PNG"
+    )
+
+    buffer.seek(0)
+
+    return discord.File(
+        buffer,
+        filename="levelup.png"
+    )
+    # ==================================================
+# XP System
+# ==================================================
+
+def get_guild_config(data, guild_id):
+
+    gid = str(guild_id)
+
+    return data["config"].setdefault(
+        gid,
+        {
+            "xp_threshold": 100,
+            "msg_rate": 10,
+            "vc_rate": 5,
+            "react_rate": 2,
+
+            "notify_channel": None,
+            "history_channel": None,
+
+            "hh_enabled": False,
+            "hh_start": 20,
+            "hh_end": 22,
+            "hh_mult": 2.0,
+
+            "role_bonuses": {},
+            "level_roles": {},
+
+            "bonus_word": "",
+            "bonus_xp": 50,
+            "bonus_once": True,
+            "bonus_claimed": [],
+
+            "omikuji_channel": None,
+            "rankuji_channel": None,
+
+            "omikuji_base_xp": 30,
+            "rankuji_base_xp": 30,
+
+            "bonus_daikichi": 100,
+            "bonus_rank_win": 200,
+
+            "rankuji_weights": [
+                1,
+                2,
+                5,
+                10,
+                82
+            ]
+        }
+    )
+
+
+# ==================================================
+# XP Multiplier
+# ==================================================
+
 def get_total_multiplier(member, data):
-    gid = str(member.guild.id); conf = data["config"].get(gid, {})
-    mult = 1.0
+
+    conf = get_guild_config(
+        data,
+        member.guild.id
+    )
+
+    multiplier = 1.0
+
+    # -------------------------
+    # Happy Hour
+    # -------------------------
+
     if conf.get("hh_enabled"):
-        now_h = get_now_jst().hour
-        s, e = conf.get("hh_start", 0), conf.get("hh_end", 0)
-        if (s <= now_h < e) if s < e else (now_h >= s or now_h < e):
-            mult *= conf.get("hh_mult", 2.0)
-    rb = conf.get("role_bonuses", {})
-    if rb:
-        best = 1.0
-        for rid, m in rb.items():
-            if any(r.id == int(rid) for r in member.roles): best = max(best, float(m))
-        mult *= best
-    return mult
 
-async def process_xp(member, amount, data, current_channel=None, skip_mult=False, type="msg"):
-    gid, uid = str(member.guild.id), str(member.id)
-    # 通算データの枠がなければ作成（ここが追加）
-    u = data["users"].setdefault(uid, {"xp":0, "level":1, "total_msg":0, "total_vc":0, "total_react":0})
-    
-    # 通算カウントアップ（ここが追加）
-    if type == "msg": u["total_msg"] = u.get("total_msg", 0) + 1
-    elif type == "vc": u["total_vc"] = u.get("total_vc", 0) + 1
-    elif type == "react": u["total_react"] = u.get("total_react", 0) + 1
+        now_hour = get_now_jst().hour
 
-    old_lv = u["level"]
-    mult = 1.0 if skip_mult else get_total_multiplier(member, data)
-    u["xp"] += int(amount * mult)
-    
-    conf = data["config"].get(gid, {})
-    thres = conf.get("xp_threshold", 100)
-    while u["xp"] >= thres: u["level"] += 1; u["xp"] -= thres
-    
-    if u["level"] > old_lv:
-        # ロール付与（既存の機能）
-        level_roles = conf.get("level_roles", {})
-        for lv, rid in level_roles.items():
-            if u["level"] >= int(lv):
-                role = member.guild.get_role(int(rid))
-                if role and role not in member.roles: await member.add_roles(role)
+        start = conf.get(
+            "hh_start",
+            20
+        )
 
-        # ① ランクアップ通知（画像・全員用：既存の機能）
-        cid = conf.get("notify_channel")
-        target = member.guild.get_channel(int(cid)) if cid else current_channel
-        if target:
-            file = await create_levelup_image(member, old_lv, u["level"])
-            await target.send(content=f"🎉 {member.mention} レベルアップ！", file=file)
+        end = conf.get(
+            "hh_end",
+            22
+        )
 
-        # ② レベルアップ履歴（管理者ログ用：ここが追加）
-        history_cid = conf.get("history_channel")
-        h_target = member.guild.get_channel(int(history_cid))
-        if h_target:
-            now = get_now_jst().strftime('%Y/%m/%d %H:%M')
-            await h_target.send(f"📋 【ログ】`{now}`: **{member.display_name}** が Lv.{u['level']} に昇格しました。")
+        active = False
 
-async def process_xp(member, amount, data, current_channel=None, skip_mult=False):
-    gid, uid = str(member.guild.id), str(member.id)
-    u = data["users"].setdefault(uid, {"xp":0, "level":1})
-    old_lv = u["level"]
-    mult = 1.0 if skip_mult else get_total_multiplier(member, data)
-    u["xp"] += int(amount * mult)
-    
-    conf = data["config"].get(gid, {})
-    thres = conf.get("xp_threshold", 100)
-    while u["xp"] >= thres:
-        u["level"] += 1
-        u["xp"] -= thres
-    
-    if u["level"] > old_lv:
-        level_roles = conf.get("level_roles", {})
-        for lv, rid in level_roles.items():
-            if u["level"] >= int(lv):
-                role = member.guild.get_role(int(rid))
-                if role and role not in member.roles: await member.add_roles(role)
-        cid = conf.get("notify_channel")
-        target = member.guild.get_channel(int(cid)) if cid else current_channel
-        if target:
-            file = await create_levelup_image(member, old_lv, u["level"])
-            await target.send(content=f"🎊 {member.mention} **LEVEL UP!!**", file=file)
+        if start < end:
+            active = (
+                start <= now_hour < end
+            )
+        else:
+            active = (
+                now_hour >= start
+                or now_hour < end
+            )
 
-async def get_server_activity_custom(guild, data, days):
+        if active:
+            multiplier *= float(
+                conf.get(
+                    "hh_mult",
+                    2.0
+                )
+            )
+
+    # -------------------------
+    # Role Bonus
+    # -------------------------
+
+    role_bonus = conf.get(
+        "role_bonuses",
+        {}
+    )
+
+    best_bonus = 1.0
+
+    for role_id, value in role_bonus.items():
+
+        try:
+
+            if any(
+                r.id == int(role_id)
+                for r in member.roles
+            ):
+
+                best_bonus = max(
+                    best_bonus,
+                    float(value)
+                )
+
+        except Exception:
+            pass
+
+    multiplier *= best_bonus
+
+    return multiplier
+
+
+# ==================================================
+# Level Up
+# ==================================================
+
+async def process_xp(
+    member,
+    amount,
+    data,
+    current_channel=None,
+    skip_mult=False,
+    xp_type="msg"
+):
+
+    uid = str(member.id)
+
+    user = get_user_data(
+        data,
+        uid
+    )
+
+    # -------------------------
+    # Statistics
+    # -------------------------
+
+    if xp_type == "msg":
+        user["total_msg"] += 1
+
+    elif xp_type == "vc":
+        user["total_vc"] += 1
+
+    elif xp_type == "react":
+        user["total_react"] += 1
+
+    old_level = user["level"]
+
+    multiplier = (
+        1.0
+        if skip_mult
+        else get_total_multiplier(
+            member,
+            data
+        )
+    )
+
+    user["xp"] += int(
+        amount * multiplier
+    )
+
+    conf = get_guild_config(
+        data,
+        member.guild.id
+    )
+
+    threshold = conf.get(
+        "xp_threshold",
+        100
+    )
+
+    while user["xp"] >= threshold:
+
+        user["xp"] -= threshold
+        user["level"] += 1
+
+    # -------------------------
+    # Level Up
+    # -------------------------
+
+    if user["level"] > old_level:
+
+        # ---------------------
+        # Role Reward
+        # ---------------------
+
+        level_roles = conf.get(
+            "level_roles",
+            {}
+        )
+
+        for lv, role_id in level_roles.items():
+
+            try:
+
+                if user["level"] >= int(lv):
+
+                    role = member.guild.get_role(
+                        int(role_id)
+                    )
+
+                    if (
+                        role
+                        and role
+                        not in member.roles
+                    ):
+                        await member.add_roles(
+                            role
+                        )
+
+            except Exception:
+                pass
+
+        # ---------------------
+        # Notify
+        # ---------------------
+
+        notify_channel = None
+
+        cid = conf.get(
+            "notify_channel"
+        )
+
+        if cid:
+
+            try:
+                notify_channel = (
+                    member.guild.get_channel(
+                        int(cid)
+                    )
+                )
+            except Exception:
+                pass
+
+        if (
+            notify_channel is None
+            and current_channel
+        ):
+            notify_channel = current_channel
+
+        if notify_channel:
+
+            try:
+
+                image = (
+                    await create_levelup_image(
+                        member,
+                        old_level,
+                        user["level"]
+                    )
+                )
+
+                await notify_channel.send(
+                    content=(
+                        f"🎉 {member.mention} "
+                        f"レベルアップ！"
+                    ),
+                    file=image
+                )
+
+            except Exception:
+                pass
+
+        # ---------------------
+        # History Log
+        # ---------------------
+
+        history_id = conf.get(
+            "history_channel"
+        )
+
+        if history_id:
+
+            try:
+
+                history_channel = (
+                    member.guild.get_channel(
+                        int(history_id)
+                    )
+                )
+
+                if history_channel:
+
+                    now = get_now_jst().strftime(
+                        "%Y/%m/%d %H:%M"
+                    )
+
+                    await history_channel.send(
+                        f"📋 {now} | "
+                        f"{member.display_name} "
+                        f"Lv.{old_level}"
+                        f" → "
+                        f"Lv.{user['level']}"
+                    )
+
+            except Exception:
+                pass
+
+
+# ==================================================
+# Activity
+# ==================================================
+
+async def get_server_activity(
+    guild,
+    data,
+    days=7
+):
+
     gid = str(guild.id)
-    activity_data = data.get("activity_log", {}).get(gid, [])
-    threshold_seconds = days * 86400
-    now = datetime.datetime.now().timestamp()
-    limit_time = now - threshold_seconds
-    recent_messages = [ts for ts in activity_data if ts > limit_time]
-    
-    # 掃除
-    oldest_allowed = now - (30 * 86400) 
-    data.setdefault("activity_log", {})[gid] = [ts for ts in recent_messages if ts > oldest_allowed]
-    
-    count = len(recent_messages)
-    avg = count / days
-    if avg < 5: status = "極めて静か"
-    elif avg < 30: status = "少し過疎気味"
-    elif avg < 100: status = "安定"
-    else: status = "活発"
-    return status, count
 
-# --- 6. クライアント ---
-class MyClient(discord.Client):
+    logs = (
+        data
+        .get("activity_log", {})
+        .get(gid, [])
+    )
+
+    now = datetime.datetime.now().timestamp()
+
+    limit = (
+        now -
+        (days * 86400)
+    )
+
+    recent = [
+        x
+        for x in logs
+        if x >= limit
+    ]
+
+    count = len(recent)
+
+    average = count / days
+
+    if average < 5:
+        status = "極めて静か"
+
+    elif average < 30:
+        status = "少し過疎気味"
+
+    elif average < 100:
+        status = "安定"
+
+    else:
+        status = "活発"
+
+    return (
+        status,
+        count
+    )
+
+
+# ==================================================
+# Discord Client
+# ==================================================
+
+class MyClient(
+    discord.Client
+):
+
     def __init__(self):
-        super().__init__(intents=discord.Intents.all())
-        self.tree = app_commands.CommandTree(self)
-        self.last_hh_state = {}
+
+        super().__init__(
+            intents=discord.Intents.all()
+        )
+
+        self.tree = (
+            app_commands.CommandTree(
+                self
+            )
+        )
 
     async def setup_hook(self):
-        self.main_loop.start()
+
+        self.vc_xp_loop.start()
+        self.render_ping.start()
+
+    # ----------------------------------
+    # VC XP
+    # ----------------------------------
 
     @tasks.loop(minutes=1)
-    async def main_loop(self):
+    async def vc_xp_loop(self):
+
         data = load_data()
+
         for guild in self.guilds:
-            gid = str(guild.id); conf = data["config"].setdefault(gid, {})
-            rate = conf.get("vc_rate", 10)
+
+            conf = get_guild_config(
+                data,
+                guild.id
+            )
+
+            vc_rate = conf.get(
+                "vc_rate",
+                5
+            )
+
             for vc in guild.voice_channels:
-                # メンバーが2人以上（自分以外に誰かいる）時のみXP付与
-                members_in_vc = [m for m in vc.members if not m.bot]
-                if len(members_in_vc) >= 2:
-                    for m in members_in_vc:
-                        await process_xp(m, rate, data, type="vc")
+
+                members = [
+                    m
+                    for m in vc.members
+                    if not m.bot
+                ]
+
+                # 2人以上
+                if len(members) < 2:
+                    continue
+
+                for member in members:
+
+                    await process_xp(
+                        member,
+                        vc_rate,
+                        data,
+                        xp_type="vc"
+                    )
+
         save_data(data)
 
+    # ----------------------------------
+    # Render Ping
+    # ----------------------------------
+
+    @tasks.loop(minutes=10)
+    async def render_ping(self):
+
+        try:
+
+            url = os.getenv(
+                "RENDER_EXTERNAL_URL"
+            )
+
+            if not url:
+                return
+
+            async with aiohttp.ClientSession() as session:
+
+                async with session.get(url):
+                    pass
+
+        except Exception:
+            pass
+
+
 client = MyClient()
+# ==================================================
+# Events
+# ==================================================
 
 @client.event
 async def on_ready():
-    await client.tree.sync()
-    print(f"✅ {client.user} 起動完了（1人VC除外設定済）")
-    
+
+    try:
+        synced = await client.tree.sync()
+
+        print(
+            f"✅ 起動完了 "
+            f"({len(synced)} commands)"
+        )
+
+    except Exception as e:
+
+        print(
+            "同期エラー:",
+            e
+        )
+
+
+# ==================================================
+# Message XP
+# ==================================================
+
 @client.event
 async def on_message(message):
-    # BotのメッセージやDMは無視
-    if message.author.bot or not message.guild:
+
+    if message.author.bot:
         return
-    
+
+    if not message.guild:
+        return
+
     data = load_data()
-    gid = str(message.guild.id)
-    cid = str(message.channel.id)
-    conf = data["config"].get(gid, {})
-    final_xp = 0
-    is_kuji = False
 
-    # --- 1. おみくじ判定 ---
-    if cid == conf.get("omikuji_channel") and message.content == "おみくじ":
-        is_kuji = True
-        res = random.choice(["大吉","中吉","小吉","吉","末吉","凶","大凶"])
-        final_xp = conf.get("omikuji_base_xp", 0)
-        if res == "大吉":
-            final_xp += conf.get("bonus_daikichi", 0)
-        await message.reply(f"⛩️ おみくじ結果：**{res}** (獲得XP: {final_xp})")
+    gid = str(
+        message.guild.id
+    )
 
-    # --- 2. ランくじ！判定 ---
-    elif cid == conf.get("rankuji_channel") and message.content == "ランくじ！":
-        is_kuji = True
-        out = ["💎ランク当","✨大当","✴️中当","✳️小当","💀ハズレ"]
-        w = conf.get("rankuji_weights", [1, 2, 5, 10, 82])
-        res_list = random.choices(out, weights=w, k=1)
-        res = res_list[0]
-        final_xp = conf.get("rankuji_base_xp", 0)
-        if res == "💎ランク当":
-            final_xp += conf.get("bonus_rank_win", 0)
-        await message.reply(f"🎲 抽選結果：**{res}** (獲得XP: {final_xp})")
+    uid = str(
+        message.author.id
+    )
 
-    # --- 3. くじ引きのXP付与（くじを引いた場合） ---
-    if is_kuji:
-        if final_xp > 0:
-            await process_xp(message.author, final_xp, data, current_channel=message.channel, skip_mult=True)
-            save_data(data)
-        return # くじの時はここで終了
+    conf = get_guild_config(
+        data,
+        gid
+    )
 
-    # --- 4. 通常の会話XP処理 (合言葉ボーナスなし) ---
-    amount = conf.get("msg_rate", 20)
-    data.setdefault("activity_log", {}).setdefault(gid, []).append(get_now_jst().timestamp())
-    
-    await process_xp(message.author, amount, data, current_channel=message.channel)
-    save_data(data)
- 
+    # ---------------------------------
+    # Activity Log
+    # ---------------------------------
+
+    data.setdefault(
+        "activity_log",
+        {}
+    ).setdefault(
+        gid,
+        []
+    ).append(
+        get_now_jst().timestamp()
+    )
+
+    # ---------------------------------
+    # おみくじ
+    # ---------------------------------
+
+    omikuji_channel = conf.get(
+        "omikuji_channel"
+    )
+
+    if (
+        omikuji_channel
+        and str(message.channel.id)
+        == str(omikuji_channel)
+        and message.content == "おみくじ"
+    ):
+
+        result = random.choice(
+            [
+                "大吉",
+                "中吉",
+                "小吉",
+                "吉",
+                "末吉",
+                "凶",
+                "大凶"
+            ]
+        )
+
+        xp = conf.get(
+            "omikuji_base_xp",
+            30
+        )
+
+        if result == "大吉":
+
+            xp += conf.get(
+                "bonus_daikichi",
+                100
+            )
+
+        await process_xp(
+            message.author,
+            xp,
+            data,
+            current_channel=message.channel,
+            skip_mult=True
+        )
+
+        save_data(data)
+
+        await message.reply(
+            f"⛩️ おみくじ結果："
+            f"**{result}**\n"
+            f"獲得XP：{xp}"
+        )
+
+        return
+
+    # ---------------------------------
+    # ランくじ
+    # ---------------------------------
+
+    rankuji_channel = conf.get(
+        "rankuji_channel"
+    )
+
+    if (
+        rankuji_channel
+        and str(message.channel.id)
+        == str(rankuji_channel)
+        and message.content == "ランくじ！"
+    ):
+
+        rewards = [
+            "💎ランク当",
+            "✨大当",
+            "✴️中当",
+            "✳️小当",
+            "💀ハズレ"
+        ]
+
+        weights = conf.get(
+            "rankuji_weights",
+            [1, 2, 5, 10, 82]
+        )
+
+        result = random.choices(
+            rewards,
+            weights=weights,
+            k=1
+        )[0]
+
+        xp = conf.get(
+            "rankuji_base_xp",
+            30
+        )
+
+        if result == "💎ランク当":
+
+            xp += conf.get(
+                "bonus_rank_win",
+                200
+            )
+
+        await process_xp(
+            message.author,
+            xp,
+            data,
+            current_channel=message.channel,
+            skip_mult=True
+        )
+
+        save_data(data)
+
+        await message.reply(
+            f"🎲 抽選結果："
+            f"**{result}**\n"
+            f"獲得XP：{xp}"
+        )
+
+        return
+
+    # ---------------------------------
+    # 通常XP
+    # ---------------------------------
+
+    msg_rate = conf.get(
+        "msg_rate",
+        10
+    )
+
+    await process_xp(
+        message.author,
+        msg_rate,
+        data,
+        current_channel=message.channel,
+        xp_type="msg"
+    )
+
+    # ---------------------------------
     # 合言葉ボーナス
-    bw = conf.get("bonus_word")
-    if bw and bw in message.content:
-        claimed = conf.setdefault("bonus_claimed", [])
-        if uid not in claimed or not conf.get("bonus_once", True):
-            await process_xp(message.author, conf.get("bonus_xp", 50), data, message.channel, skip_mult=True)
-            await message.add_reaction("🎁")
-            if uid not in claimed: claimed.append(uid)
+    # ---------------------------------
+
+    bonus_word = conf.get(
+        "bonus_word",
+        ""
+    )
+
+    if (
+        bonus_word
+        and bonus_word in message.content
+    ):
+
+        claimed = conf.setdefault(
+            "bonus_claimed",
+            []
+        )
+
+        once = conf.get(
+            "bonus_once",
+            True
+        )
+
+        can_claim = (
+            uid not in claimed
+            or not once
+        )
+
+        if can_claim:
+
+            bonus_xp = conf.get(
+                "bonus_xp",
+                50
+            )
+
+            await process_xp(
+                message.author,
+                bonus_xp,
+                data,
+                current_channel=message.channel,
+                skip_mult=True
+            )
+
+            try:
+                await message.add_reaction(
+                    "🎁"
+                )
+            except Exception:
+                pass
+
+            if uid not in claimed:
+                claimed.append(uid)
+
     save_data(data)
 
+
+# ==================================================
+# Reaction XP
+# ==================================================
+
 @client.event
-async def on_raw_reaction_add(payload):
-    guild = client.get_guild(payload.guild_id)
-    if not guild or not payload.member or payload.member.bot: return
+async def on_raw_reaction_add(
+    payload
+):
+
+    if payload.guild_id is None:
+        return
+
+    guild = client.get_guild(
+        payload.guild_id
+    )
+
+    if not guild:
+        return
+
+    member = payload.member
+
+    if not member:
+        return
+
+    if member.bot:
+        return
+
     data = load_data()
-    await process_xp(payload.member, data["config"].get(str(guild.id), {}).get("react_rate", 2), data, type="react")
+
+    conf = get_guild_config(
+        data,
+        guild.id
+    )
+
+    react_rate = conf.get(
+        "react_rate",
+        2
+    )
+
+    await process_xp(
+        member,
+        react_rate,
+        data,
+        xp_type="react"
+    )
+
     save_data(data)
 
-@client.event
-async def on_message_delete(message):
-    if message.author.bot or not message.guild: return
-    data = load_data(); uid = str(message.author.id)
-    penalty = data["config"].get(str(message.guild.id), {}).get("msg_rate", 5)
-    if uid in data["users"]:
-        u = data["users"][uid]
-        u["xp"] = max(0, u["xp"] - penalty)
-        u["total_msg"] = max(0, u.get("total_msg", 0) - 1)
-        save_data(data)
+
+# ==================================================
+# Message Delete
+# ==================================================
 
 @client.event
-async def on_raw_reaction_remove(payload):
-    guild = client.get_guild(payload.guild_id)
-    if not guild: return
-    member = guild.get_member(payload.user_id)
-    if not member or member.bot: return
-    data = load_data(); uid = str(member.id)
-    penalty = data["config"].get(str(guild.id), {}).get("react_rate", 2)
-    if uid in data["users"]:
-        u = data["users"][uid]
-        u["xp"] = max(0, u["xp"] - penalty)
-        u["total_react"] = max(0, u.get("total_react", 0) - 1)
-        save_data(data)
+async def on_message_delete(
+    message
+):
 
+    if not message.guild:
+        return
 
-# --- 7. スラッシュコマンド (全機能網羅) ---
+    if message.author.bot:
+        return
 
-@client.tree.command(name="rank", description="現在のランクカードを表示します")
-async def rank(interaction: discord.Interaction, member: discord.Member = None):
-    # 相手が指定されなければ実行した本人を対象にする
-    target = member or interaction.user
-    
     data = load_data()
-    uid = str(target.id)
-    gid = str(interaction.guild.id)
-    
-    # ユーザーデータとサーバー設定（しきい値）を取得
-    u = data["users"].get(uid, {"xp": 0, "level": 1})
-    conf = data["config"].get(gid, {})
-    thres = conf.get("xp_threshold", 100)
 
-    # 1. 応答を待機状態にする（画像生成中のタイムアウト防止）
+    uid = str(
+        message.author.id
+    )
+
+    if uid not in data["users"]:
+        return
+
+    conf = get_guild_config(
+        data,
+        message.guild.id
+    )
+
+    penalty = conf.get(
+        "msg_rate",
+        10
+    )
+
+    user = data["users"][uid]
+
+    user["xp"] = max(
+        0,
+        user["xp"] - penalty
+    )
+
+    user["total_msg"] = max(
+        0,
+        user.get(
+            "total_msg",
+            0
+        ) - 1
+    )
+
+    save_data(data)
+
+
+# ==================================================
+# Reaction Remove
+# ==================================================
+
+@client.event
+async def on_raw_reaction_remove(
+    payload
+):
+
+    if payload.guild_id is None:
+        return
+
+    guild = client.get_guild(
+        payload.guild_id
+    )
+
+    if not guild:
+        return
+
+    member = guild.get_member(
+        payload.user_id
+    )
+
+    if not member:
+        return
+
+    if member.bot:
+        return
+
+    data = load_data()
+
+    uid = str(member.id)
+
+    if uid not in data["users"]:
+        return
+
+    conf = get_guild_config(
+        data,
+        guild.id
+    )
+
+    penalty = conf.get(
+        "react_rate",
+        2
+    )
+
+    user = data["users"][uid]
+
+    user["xp"] = max(
+        0,
+        user["xp"] - penalty
+    )
+
+    user["total_react"] = max(
+        0,
+        user.get(
+            "total_react",
+            0
+        ) - 1
+    )
+
+    save_data(data)
+    # ==================================================
+# User Commands
+# ==================================================
+
+@client.tree.command(
+    name="rank",
+    description="ランクカードを表示します"
+)
+async def rank(
+    interaction: discord.Interaction,
+    member: discord.Member = None
+):
+
+    target = (
+        member
+        if member
+        else interaction.user
+    )
+
+    data = load_data()
+
+    user = get_user_data(
+        data,
+        target.id
+    )
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    threshold = conf.get(
+        "xp_threshold",
+        100
+    )
+
     await interaction.response.defer()
-    
-    # 2. 画像を作成
-    file = await create_level_card(target, u["level"], u["xp"], thres)
-    
-    # 3. 待機状態の応答を上書きして画像を送信
-    await interaction.followup.send(file=file)
+
+    file = await create_level_card(
+        target,
+        user["level"],
+        user["xp"],
+        threshold
+    )
+
+    await interaction.followup.send(
+        file=file
+    )
 
 
-@client.tree.command(name="config_show", description="【管理者】現在の全設定を確認")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_show(interaction: discord.Interaction):
-    data = load_data(); conf = data["config"].get(str(interaction.guild.id), {})
-    embed = discord.Embed(title="⚙️ 設定一覧", color=0x3498db)
-    for k, v in conf.items():
-        if "claimed" not in k: embed.add_field(name=k, value=f"`{v}`", inline=True)
-    await interaction.response.send_message(embed=embed)
+# ==================================================
+# Stats
+# ==================================================
 
-@client.tree.command(name="config_threshold", description="【管理者】レベルアップに必要なXPを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_threshold(interaction: discord.Interaction, threshold: int):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf["xp_threshold"] = threshold
-    save_data(data)
-    await interaction.response.send_message(f"✅ 次のレベルに必要なXPを **{threshold}** に設定しました。")
+@client.tree.command(
+    name="stats",
+    description="統計情報を表示します"
+)
+async def stats(
+    interaction: discord.Interaction,
+    member: discord.Member = None
+):
 
-@client.tree.command(name="config_rates", description="【管理者】メッセージ、VC、リアクションの獲得XPを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_rates(interaction: discord.Interaction, msg: int, vc: int, react: int):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.update({"msg_rate": msg, "vc_rate": vc, "react_rate": react})
-    save_data(data)
-    await interaction.response.send_message(f"✅ 獲得XPを更新：MSG **{msg}** / VC **{vc}** / React **{react}**")
-
-@client.tree.command(name="config_channel", description="【管理者】お祝い画像を送るチャンネルを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf["notify_channel"] = str(channel.id)
-    save_data(data)
-    await interaction.response.send_message(f"✅ レベルアップ通知を {channel.mention} に設定しました。")
-
-@client.tree.command(name="config_hh", description="【管理者】ハッピーアワー (開始/終了時, 倍率)")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_hh(interaction: discord.Interaction, enabled: bool, start: int, end: int, mult: float):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf.update({"hh_enabled": enabled, "hh_start": start, "hh_end": end, "hh_mult": mult, "hh_ann_cid": str(interaction.channel.id)})
-    save_data(data); await interaction.response.send_message(f"✅ ハッピーアワーを {'有効' if enabled else '無効'} にしました。")
-
-@client.tree.command(name="config_reward", description="【管理者】レベル報酬/役職倍率")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_reward(interaction: discord.Interaction, level: int = None, role: discord.Role = None, mult: float = None):
-    data = load_data(); conf = data["config"].setdefault(str(interaction.guild.id), {})
-    if level and role: conf.setdefault("level_roles", {})[str(level)] = str(role.id)
-    if role and mult: conf.setdefault("role_bonuses", {})[str(role.id)] = mult
-    save_data(data); await interaction.response.send_message("✅ 報酬/倍率設定を更新。")
-
-# --- くじ引き設定コマンド群 ---
-
-@client.tree.command(name="config_omikuji", description="【管理者】おみくじを有効にするチャンネルを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_omikuji(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf["omikuji_channel"] = str(channel.id)
-    save_data(data)
-    await interaction.response.send_message(f"⛩️ {channel.mention} で「おみくじ」を有効にしました。")
-
-@client.tree.command(name="config_rankuji", description="【管理者】ランくじ！を有効にするチャンネルを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_rankuji(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf["rankuji_channel"] = str(channel.id)
-    save_data(data)
-    await interaction.response.send_message(f"🎲 {channel.mention} で「ランくじ！」を有効にしました。")
-
-@client.tree.command(name="config_kuji_xp", description="【管理者】くじ引き時に一律で付与するXPを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_kuji_xp(interaction: discord.Interaction, omikuji_xp: int, rankuji_xp: int):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf["omikuji_base_xp"] = omikuji_xp
-    conf["rankuji_base_xp"] = rankuji_xp
-    save_data(data)
-    await interaction.response.send_message(f"✅ 基本XP設定：おみくじ {omikuji_xp} / ランくじ {rankuji_xp}")
-
-@client.tree.command(name="config_kuji_bonus", description="【管理者】特定の当たりが出た時のボーナスXPを設定します")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_kuji_bonus(interaction: discord.Interaction, daikichi_bonus: int, rank_win_bonus: int):
-    data = load_data()
-    conf = data["config"].setdefault(str(interaction.guild.id), {})
-    conf["bonus_daikichi"] = daikichi_bonus
-    conf["bonus_rank_win"] = rank_win_bonus
-    save_data(data)
-    await interaction.response.send_message(f"✅ ボーナス設定：大吉 +{daikichi_bonus} / ランク当 +{rank_win_bonus}")
-
-@client.tree.command(name="admin_set", description="【管理者】特定ユーザーのXP/Lvを直接変更")
-@app_commands.checks.has_permissions(administrator=True)
-async def admin_set(interaction: discord.Interaction, member: discord.Member, level: int, xp: int):
-    data = load_data(); data["users"][str(member.id)] = {"xp": xp, "level": level}
-    save_data(data); await interaction.response.send_message(f"✅ {member.display_name} を Lv.{level} / {xp}XP に設定。")
-    
-@client.tree.command(name="daily", description="1日1回のボーナスXPを受け取ります")
-async def daily(interaction: discord.Interaction):
-    data = load_data()
-    uid = str(interaction.user.id)
-    u = data["users"].setdefault(uid, {"xp": 0, "level": 1, "last_daily": 0})
-    
-    now = datetime.datetime.now().timestamp()
-    # 24時間（86400秒）経過しているかチェック
-    if now - u.get("last_daily", 0) < 86400:
-        rem = int(86400 - (now - u["last_daily"]))
-        hours = rem // 3600
-        await interaction.response.send_message(f"❌ まだ受け取れません！ あと約 {hours} 時間後です。", ephemeral=True)
-        return
-        
-    bonus = random.randint(50, 150) # 50〜150の間でランダム
-    u["last_daily"] = now
-    await process_xp(interaction.user, bonus, data, interaction.channel, skip_mult=True)
-    save_data(data)
-    
-    await interaction.response.send_message(f"🎁 **デイリーボーナス！** \n`{bonus} XP` を獲得しました！")
-
-@client.tree.command(name="stats", description="自分の通算統計データを表示します")
-async def stats(interaction: discord.Interaction, member: discord.Member = None):
-    member = member or interaction.user
-    data = load_data()
-    u = data["users"].get(str(member.id), {})
-    embed = discord.Embed(title=f"📊 {member.display_name} の統計", color=0x3498db)
-    embed.add_field(name="通算メッセージ", value=f"{u.get('total_msg', 0)} 通", inline=True)
-    embed.add_field(name="通算リアクション", value=f"{u.get('total_react', 0)} 回", inline=True)
-    embed.add_field(name="通算VC獲得数", value=f"{u.get('total_vc', 0)} 回", inline=True)
-    await interaction.response.send_message(embed=embed)
-
-@client.tree.command(name="config_history", description="【管理者】管理者用ログチャンネルを設定")
-@app_commands.checks.has_permissions(administrator=True)
-async def config_history(interaction: discord.Interaction, channel: discord.TextChannel):
-    data = load_data()
-    data["config"].setdefault(str(interaction.guild.id), {})["history_channel"] = str(channel.id)
-    save_data(data)
-
-# --- 管理者用：XP付与コマンド ---
-@client.tree.command(name="give_xp", description="【管理者】指定したメンバーにXPを付与します")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.describe(member="XPを付与するメンバー", amount="付与するXPの量")
-async def give_xp(interaction: discord.Interaction, member: discord.Member, amount: int):
-    if amount <= 0:
-        await interaction.response.send_message("1以上の数値を入力してください。", ephemeral=True)
-        return
+    target = (
+        member
+        if member
+        else interaction.user
+    )
 
     data = load_data()
-    # process_xpを呼び出してXPを付与（倍率無視、通知あり）
-    await process_xp(member, amount, data, current_channel=interaction.channel, skip_mult=True)
-    save_data(data)
 
-    await interaction.response.send_message(f"✅ {member.display_name} に **{amount} XP** を付与しました！")
-
-# エラーハンドリング（権限がない場合）
-@give_xp.error
-async def give_xp_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ このコマンドを実行する権限（管理者権限）がありません。", ephemeral=True)
-
-@client.tree.command(name="top", description="レベルが高い上位10名を表示します")
-async def top(interaction: discord.Interaction):
-    data = load_data()
-    users = data.get("users", {})
-    
-    if not users:
-        await interaction.response.send_message("まだデータがありません。", ephemeral=True)
-        return
-
-    # レベル、次にXPの順でソートして上位10人を取得
-    sorted_users = sorted(
-        users.items(), 
-        key=lambda x: (x[1].get("level", 1), x[1].get("xp", 0)), 
-        reverse=True
-    )[:10]
+    user = get_user_data(
+        data,
+        target.id
+    )
 
     embed = discord.Embed(
-        title=f"🏆 {interaction.guild.name} レベルランキング",
+        title=f"📊 {target.display_name} の統計",
+        color=0x3498DB,
+        timestamp=get_now_jst()
+    )
+
+    embed.add_field(
+        name="レベル",
+        value=user["level"],
+        inline=True
+    )
+
+    embed.add_field(
+        name="現在XP",
+        value=user["xp"],
+        inline=True
+    )
+
+    embed.add_field(
+        name="通算メッセージ",
+        value=user["total_msg"],
+        inline=False
+    )
+
+    embed.add_field(
+        name="通算リアクション",
+        value=user["total_react"],
+        inline=False
+    )
+
+    embed.add_field(
+        name="VC獲得回数",
+        value=user["total_vc"],
+        inline=False
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+
+
+# ==================================================
+# Daily Bonus
+# ==================================================
+
+@client.tree.command(
+    name="daily",
+    description="1日1回のXPボーナス"
+)
+async def daily(
+    interaction: discord.Interaction
+):
+
+    data = load_data()
+
+    user = get_user_data(
+        data,
+        interaction.user.id
+    )
+
+    now = datetime.datetime.now().timestamp()
+
+    remain = (
+        86400 -
+        (
+            now -
+            user["last_daily"]
+        )
+    )
+
+    if remain > 0:
+
+        hours = int(
+            remain // 3600
+        )
+
+        minutes = int(
+            (remain % 3600)
+            // 60
+        )
+
+        await interaction.response.send_message(
+            f"❌ まだ受け取れません\n"
+            f"あと {hours}時間 {minutes}分",
+            ephemeral=True
+        )
+
+        return
+
+    reward = random.randint(
+        50,
+        150
+    )
+
+    user["last_daily"] = now
+
+    await process_xp(
+        interaction.user,
+        reward,
+        data,
+        current_channel=interaction.channel,
+        skip_mult=True
+    )
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"🎁 デイリーボーナス！\n"
+        f"`{reward} XP` 獲得しました！"
+    )
+
+
+# ==================================================
+# Top Ranking
+# ==================================================
+
+@client.tree.command(
+    name="top",
+    description="ランキング表示"
+)
+async def top(
+    interaction: discord.Interaction
+):
+
+    data = load_data()
+
+    if not data["users"]:
+
+        await interaction.response.send_message(
+            "データがありません。"
+        )
+
+        return
+
+    sorted_users = sorted(
+        data["users"].items(),
+        key=lambda x: (
+            x[1].get(
+                "level",
+                1
+            ),
+            x[1].get(
+                "xp",
+                0
+            )
+        ),
+        reverse=True
+    )
+
+    embed = discord.Embed(
+        title=f"🏆 {interaction.guild.name} ランキング",
         color=discord.Color.gold(),
         timestamp=get_now_jst()
     )
 
-    leaderboard_text = ""
-    for i, (uid, udata) in enumerate(sorted_users, 1):
-        member = interaction.guild.get_member(int(uid))
-        name = member.display_name if member else f"User({uid})"
-        
-        level = udata.get("level", 1)
-        xp = udata.get("xp", 0)
-        
-        # 上位3名には絵文字をつける
-        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"`{i}.` ")
-        leaderboard_text += f"{medal} **{name}** - Lv.{level} (XP: {xp})\n"
+    lines = []
 
-    embed.description = leaderboard_text
-    await interaction.response.send_message(embed=embed)
+    for index, (
+        uid,
+        user
+    ) in enumerate(
+        sorted_users[:10],
+        start=1
+    ):
+
+        member = (
+            interaction.guild.get_member(
+                int(uid)
+            )
+        )
+
+        if not member:
+            continue
+
+        medal = {
+            1: "🥇",
+            2: "🥈",
+            3: "🥉"
+        }.get(
+            index,
+            f"`{index}`"
+        )
+
+        lines.append(
+            f"{medal} "
+            f"**{member.display_name}** "
+            f"- Lv.{user['level']} "
+            f"({user['xp']}XP)"
+        )
+
+    embed.description = (
+        "\n".join(lines)
+        if lines
+        else "データなし"
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
 
 
-# --- 8. 起動 ---
+# ==================================================
+# Server Activity
+# ==================================================
+
+@client.tree.command(
+    name="activity",
+    description="サーバー活動状況"
+)
+async def activity(
+    interaction: discord.Interaction
+):
+
+    data = load_data()
+
+    status, count = (
+        await get_server_activity(
+            interaction.guild,
+            data,
+            7
+        )
+    )
+
+    embed = discord.Embed(
+        title="📈 サーバー活動状況",
+        color=0x2ECC71
+    )
+
+    embed.add_field(
+        name="状態",
+        value=status,
+        inline=False
+    )
+
+    embed.add_field(
+        name="7日間の発言数",
+        value=f"{count}件",
+        inline=False
+    )
+
+    await interaction.response.send_message(
+        embed=embed
+    )
+    # ==================================================
+# Admin Check
+# ==================================================
+
+async def admin_only(
+    interaction: discord.Interaction
+):
+    return (
+        interaction.user
+        .guild_permissions
+        .administrator
+    )
+
+
+# ==================================================
+# Config Show
+# ==================================================
+
+@client.tree.command(
+    name="config_show",
+    description="現在の設定を表示"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_show(
+    interaction: discord.Interaction
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    embed = discord.Embed(
+        title="⚙️ 現在の設定",
+        color=0x3498DB
+    )
+
+    for key, value in conf.items():
+
+        if key == "bonus_claimed":
+            continue
+
+        embed.add_field(
+            name=key,
+            value=f"`{value}`",
+            inline=False
+        )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# ==================================================
+# XP Threshold
+# ==================================================
+
+@client.tree.command(
+    name="config_threshold",
+    description="必要XP設定"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_threshold(
+    interaction: discord.Interaction,
+    threshold: int
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["xp_threshold"] = threshold
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ 必要XPを "
+        f"{threshold} に設定しました。"
+    )
+
+
+# ==================================================
+# XP Rates
+# ==================================================
+
+@client.tree.command(
+    name="config_rates",
+    description="XP量設定"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_rates(
+    interaction: discord.Interaction,
+    msg: int,
+    vc: int,
+    react: int
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["msg_rate"] = msg
+    conf["vc_rate"] = vc
+    conf["react_rate"] = react
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        "✅ XP量を更新しました。"
+    )
+
+
+# ==================================================
+# Notify Channel
+# ==================================================
+
+@client.tree.command(
+    name="config_channel",
+    description="通知チャンネル設定"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_channel(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["notify_channel"] = str(
+        channel.id
+    )
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ 通知先を "
+        f"{channel.mention}"
+        f" に設定しました。"
+    )
+
+
+# ==================================================
+# History Channel
+# ==================================================
+
+@client.tree.command(
+    name="config_history",
+    description="ログチャンネル設定"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_history(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["history_channel"] = str(
+        channel.id
+    )
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ ログチャンネルを "
+        f"{channel.mention}"
+        f" に設定しました。"
+    )
+
+
+# ==================================================
+# Happy Hour
+# ==================================================
+
+@client.tree.command(
+    name="config_hh",
+    description="ハッピーアワー設定"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_hh(
+    interaction: discord.Interaction,
+    enabled: bool,
+    start: int,
+    end: int,
+    multiplier: float
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["hh_enabled"] = enabled
+    conf["hh_start"] = start
+    conf["hh_end"] = end
+    conf["hh_mult"] = multiplier
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        "✅ ハッピーアワーを更新しました。"
+    )
+
+
+# ==================================================
+# Level Reward
+# ==================================================
+
+@client.tree.command(
+    name="config_reward",
+    description="レベル報酬設定"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_reward(
+    interaction: discord.Interaction,
+    level: int,
+    role: discord.Role
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf.setdefault(
+        "level_roles",
+        {}
+    )[str(level)] = str(role.id)
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ Lv.{level} → "
+        f"{role.mention}"
+        f" を設定しました。"
+    )
+
+
+# ==================================================
+# Role Bonus
+# ==================================================
+
+@client.tree.command(
+    name="config_role_bonus",
+    description="役職XP倍率"
+)
+@app_commands.check(
+    admin_only
+)
+async def config_role_bonus(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    multiplier: float
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf.setdefault(
+        "role_bonuses",
+        {}
+    )[str(role.id)] = multiplier
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ {role.mention}"
+        f" の倍率を "
+        f"{multiplier}倍 "
+        f"に設定しました。"
+    )
+
+
+# ==================================================
+# Admin Set
+# ==================================================
+
+@client.tree.command(
+    name="admin_set",
+    description="レベル変更"
+)
+@app_commands.check(
+    admin_only
+)
+async def admin_set(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    level: int,
+    xp: int
+):
+
+    data = load_data()
+
+    user = get_user_data(
+        data,
+        member.id
+    )
+
+    user["level"] = level
+    user["xp"] = xp
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ {member.display_name}"
+        f" を Lv.{level}"
+        f" / {xp}XP に変更しました。"
+    )
+
+
+# ==================================================
+# Give XP
+# ==================================================
+
+@client.tree.command(
+    name="give_xp",
+    description="XP付与"
+)
+@app_commands.check(
+    admin_only
+)
+async def give_xp(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    amount: int
+):
+
+    if amount <= 0:
+
+        await interaction.response.send_message(
+            "1以上を指定してください。",
+            ephemeral=True
+        )
+
+        return
+
+    data = load_data()
+
+    await process_xp(
+        member,
+        amount,
+        data,
+        current_channel=interaction.channel,
+        skip_mult=True
+    )
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ {member.mention}"
+        f" に {amount}XP 付与しました。"
+    )
+    # ==================================================
+# Omikuji Config
+# ==================================================
+
+@client.tree.command(
+    name="config_omikuji",
+    description="おみくじチャンネル設定"
+)
+@app_commands.check(admin_only)
+async def config_omikuji(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["omikuji_channel"] = str(
+        channel.id
+    )
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ {channel.mention} を"
+        f" おみくじチャンネルに設定しました。"
+    )
+
+
+# ==================================================
+# Rankuji Config
+# ==================================================
+
+@client.tree.command(
+    name="config_rankuji",
+    description="ランくじチャンネル設定"
+)
+@app_commands.check(admin_only)
+async def config_rankuji(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["rankuji_channel"] = str(
+        channel.id
+    )
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        f"✅ {channel.mention} を"
+        f" ランくじチャンネルに設定しました。"
+    )
+
+
+# ==================================================
+# Kuji XP
+# ==================================================
+
+@client.tree.command(
+    name="config_kuji_xp",
+    description="くじXP設定"
+)
+@app_commands.check(admin_only)
+async def config_kuji_xp(
+    interaction: discord.Interaction,
+    omikuji_xp: int,
+    rankuji_xp: int
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["omikuji_base_xp"] = omikuji_xp
+    conf["rankuji_base_xp"] = rankuji_xp
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        "✅ XP設定を更新しました。"
+    )
+
+
+# ==================================================
+# Kuji Bonus
+# ==================================================
+
+@client.tree.command(
+    name="config_kuji_bonus",
+    description="くじボーナス設定"
+)
+@app_commands.check(admin_only)
+async def config_kuji_bonus(
+    interaction: discord.Interaction,
+    daikichi_bonus: int,
+    rank_bonus: int
+):
+
+    data = load_data()
+
+    conf = get_guild_config(
+        data,
+        interaction.guild.id
+    )
+
+    conf["bonus_daikichi"] = daikichi_bonus
+    conf["bonus_rank_win"] = rank_bonus
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        "✅ ボーナス設定を更新しました。"
+    )
+
+
+# ==================================================
+# Tree Error Handler
+# ==================================================
+
+@client.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError
+):
+
+    if isinstance(
+        error,
+        app_commands.CheckFailure
+    ):
+
+        msg = (
+            "❌ このコマンドは"
+            "管理者専用です。"
+        )
+
+        try:
+
+            if interaction.response.is_done():
+
+                await interaction.followup.send(
+                    msg,
+                    ephemeral=True
+                )
+
+            else:
+
+                await interaction.response.send_message(
+                    msg,
+                    ephemeral=True
+                )
+
+        except Exception:
+            pass
+
+        return
+
+    if isinstance(
+        error,
+        app_commands.CommandOnCooldown
+    ):
+
+        try:
+
+            await interaction.response.send_message(
+                "⏳ 少し待ってから"
+                "実行してください。",
+                ephemeral=True
+            )
+
+        except Exception:
+            pass
+
+        return
+
+    print(
+        "Command Error:",
+        error
+    )
+
+
+# ==================================================
+# Global Error
+# ==================================================
+
+@client.event
+async def on_error(
+    event,
+    *args,
+    **kwargs
+):
+
+    import traceback
+
+    print(
+        "\n===== ERROR ====="
+    )
+
+    traceback.print_exc()
+
+    print(
+        "=================\n"
+    )
+
+
+# ==================================================
+# Startup
+# ==================================================
+
 if __name__ == "__main__":
+
+    if not TOKEN:
+
+        raise ValueError(
+            "DISCORD_TOKEN が"
+            "設定されていません"
+        )
+
     keep_alive()
-    client.run(TOKEN)
+
+    client.run(
+        TOKEN,
+        log_handler=None
+    )
