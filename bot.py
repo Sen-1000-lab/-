@@ -1656,6 +1656,33 @@ async def config_show(
     )
 
 
+@client.tree.command(
+    name="reset_all_xp",
+    description="全員のXPとレベルをリセット"
+)
+@app_commands.check(admin_only)
+async def reset_all_xp(
+    interaction: discord.Interaction
+):
+
+    data = load_data()
+
+    guild_id = str(interaction.guild.id)
+
+    users = data.get("users", {})
+
+    # 全ユーザー初期化
+    for uid, user in users.items():
+
+        user["xp"] = 0
+        user["level"] = 1
+
+    save_data(data)
+
+    await interaction.response.send_message(
+        "✅ 全ユーザーのXPとレベルをリセットしました。",
+        ephemeral=True
+    )
 # ==================================================
 # XP Threshold
 # ==================================================
