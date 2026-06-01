@@ -1445,8 +1445,8 @@ async def daily(
         return
 
     reward = random.randint(
-        50,
-        150
+        10,
+        100
     )
 
     user["last_daily"] = now
